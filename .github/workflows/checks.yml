@@ -100,15 +100,14 @@ jobs:
         run: ./scripts/lib/fetch-chart-deps.sh
 
       - name: lint
+        # Same three value layers the template step uses. Linting with a
+        # different set is how "lint is missing a --set" failures happen, and
+        # they say nothing about the chart.
         run: |
           helm lint helm/buzz-gke \
             --values helm/buzz-gke/values.yaml \
             --values helm/buzz-gke/values-${{ matrix.environment }}.yaml \
-            --set gcp.projectId=ci-project \
-            --set gcp.namePrefix=buzz-${{ matrix.environment }} \
-            --set buzz.relayUrl=wss://buzz.example.com \
-            --set buzz.ownerPubkey=0000000000000000000000000000000000000000000000000000000000000000 \
-            --set buzz.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000
+            --values .github/ci-values.yaml
 
       - name: template
         run: |

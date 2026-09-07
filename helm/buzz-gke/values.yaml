@@ -216,9 +216,14 @@ buzz:
   enabled: true
 
   # Never a tag in production. buzzctl images mirror resolves the digest from
-  # Artifact Registry and writes it into values.generated.yaml.
+  # Artifact Registry and writes both the repository and the digest into
+  # values.generated.yaml, so this default is only what upstream publishes —
+  # a real value because the upstream chart's schema requires a non-empty
+  # repository, and because an empty string is not a useful default anyway.
+  # Nothing deploys from here regardless: buzz-gke.validate refuses to render
+  # without a pinned digest, and the digest comes from the mirror.
   image:
-    repository: ""
+    repository: ghcr.io/block/buzz
     digest: ""
     pullPolicy: IfNotPresent
 
