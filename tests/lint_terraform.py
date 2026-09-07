@@ -114,6 +114,23 @@ def main() -> int:
         check(str(body.get("uniform_bucket_level_access")).lower() in ("true", "${true}"),
               f"{name}: uniform bucket-level access")
 
+    # Cross-check the environment tfvars for the combination the gke module
+    # refuses at plan time. `terraform validate` does not evaluate
+    # preconditions, and a static scan cannot see through the dynamic block, so
+    # without this nothing catches it until someone runs a plan.
+    for env_dir in sorted((ROOT / "environments").iterdir()):
+        tfvars = env_dir / "terraform.tfvars"
+        if not env_dir.is_dir() or not tfvars.exists():
+            continue
+        with tfvars.open() as handle:
+            values = hcl2.load(handle)
+        public = str(values.get("enable_public_control_plane", False)).lower() in ("true", "${true}")
+        networks = values.get("master_authorized_networks") or []
+        check(
+            not public or len(networks) > 0,
+            f"{env_dir.name}: a public control plane must list master_authorized_networks",
+        )
+
     if failures:
         print(f"\n{failures} invariant(s) violated", file=sys.stderr)
         return 1

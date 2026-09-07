@@ -12,8 +12,11 @@ admin_hostname  = "buzz-dev-admin.example.com"
 dns_zone_name   = ""
 create_dns_zone = false
 
-# Reachable from a laptop. Never do this above dev.
-enable_public_control_plane = true
+# The control plane has no public endpoint by default, even here. To drive dev
+# from a laptop, set this true AND list the CIDRs that may reach the API —
+# the module refuses the combination of a public endpoint with an empty
+# allowlist, because that puts the Kubernetes API server on the open internet.
+enable_public_control_plane = false
 master_authorized_networks = [
   # { cidr_block = "203.0.113.0/24", display_name = "office egress" },
 ]

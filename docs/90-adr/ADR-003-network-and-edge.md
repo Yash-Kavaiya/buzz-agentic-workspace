@@ -45,8 +45,9 @@ result. `HealthCheckPolicy` points at 8080 for that reason.
 NAT. The control plane has no public endpoint by default; reach it from a
 bastion in the VPC, Cloud VPN, or the GKE Connect gateway. Cloud SQL and
 Memorystore are private-IP only over Private Service Access. `dev` may set
-`enable_public_control_plane = true` for laptop access, restricted to
-`master_authorized_networks`; staging and prod may not.
+`enable_public_control_plane = true` for laptop access, but only together with
+`master_authorized_networks` — the module refuses a public endpoint with an
+empty allowlist, in every environment. Staging and prod stay private.
 
 **IAP protects the admin console, and only the admin console.** The moderation
 console gets its own hostname with its own backend, so IAP can be applied to it

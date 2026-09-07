@@ -9,6 +9,18 @@ resource "random_id" "suffix" {
   byte_length = 3
 }
 
+# ssl_mode = "ENCRYPTED_ONLY" is the modern replacement for the deprecated
+# require_ssl = true that GCP-0015 looks for; it enforces SSL on every
+# connection. TRUSTED_CLIENT_CERTIFICATE_REQUIRED is stronger still, but the
+# Auth Proxy already provides mutual TLS and requiring client certificates
+# would break the password-authenticated break-glass path.
+# trivy:ignore:AVD-GCP-0015
+#
+# GCP-0021 wants statement logging disabled outright on privacy grounds.
+# Slow-query text is too valuable during an incident to give up, so the privacy
+# concern is addressed directly instead: log_parameter_max_length = 0 stops
+# bind parameter VALUES — where message content would appear — from being logged.
+# trivy:ignore:AVD-GCP-0021
 resource "google_sql_database_instance" "this" {
   project = var.project_id
   # Cloud SQL reserves a deleted instance name for a week; the suffix keeps a
@@ -31,6 +43,7 @@ resource "google_sql_database_instance" "this" {
 
     user_labels = var.labels
 
+    # trivy:ignore:AVD-GCP-0015
     ip_configuration {
       # No public IP. Nothing outside the VPC can open a socket to this instance.
       ipv4_enabled                                  = false
@@ -77,14 +90,47 @@ resource "google_sql_database_instance" "this" {
 
     # Buzz runs sqlx migrations at startup and does heavy JSONB/full-text work;
     # logging slow statements is the first thing you want during an incident.
+    #
     database_flags {
       name  = "log_min_duration_statement"
       value = "1000"
     }
 
     database_flags {
+      name  = "log_parameter_max_length"
+      value = "0"
+    }
+
+    database_flags {
       name  = "log_checkpoints"
       value = "on"
+    }
+
+    # Connection lifecycle. With the relay behind an Auth Proxy every
+    # connection looks alike at the network layer, so these are the only record
+    # of who connected when.
+    database_flags {
+      name  = "log_connections"
+      value = "on"
+    }
+
+    database_flags {
+      name  = "log_disconnections"
+      value = "on"
+    }
+
+    # A lock wait is how relay contention presents itself in the database, and
+    # it is invisible without this.
+    database_flags {
+      name  = "log_lock_waits"
+      value = "on"
+    }
+
+    # Temporary files mean a query spilled to disk — the signal that work_mem
+    # or an index is wrong. 0 logs every one.
+    database_flags {
+      name  = "log_temp_files"
+      value = "0"
     }
   }
 

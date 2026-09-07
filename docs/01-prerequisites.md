@@ -94,15 +94,17 @@ after someone tidies the zone.
 
 ## Cluster access
 
-The control plane has no public endpoint outside dev. Before running `buzzctl`
-commands that talk to Kubernetes, have one of:
+The control plane has no public endpoint by default, in any environment. Before
+running `buzzctl` commands that talk to Kubernetes, have one of:
 
 - a bastion VM inside the VPC,
 - Cloud VPN or Interconnect to the VPC,
 - the GKE Connect gateway.
 
-For dev only, `enable_public_control_plane = true` with
-`master_authorized_networks` set to your egress range works from a laptop.
+For dev, `enable_public_control_plane = true` **together with**
+`master_authorized_networks` set to your egress range works from a laptop. The
+module refuses a public endpoint with an empty allowlist — that combination puts
+the Kubernetes API server on the open internet.
 
 ## Identity, before the first deploy
 
