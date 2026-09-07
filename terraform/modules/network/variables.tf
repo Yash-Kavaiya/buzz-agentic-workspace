@@ -1,11 +1,11 @@
 variable "project_id" {
   description = "GCP project that hosts this environment."
-  type = string
+  type        = string
 }
 
 variable "region" {
   description = "Primary region. All regional resources land here."
-  type = string
+  type        = string
 }
 
 variable "name_prefix" {
@@ -49,6 +49,6 @@ variable "psa_prefix_length" {
 
 variable "labels" {
   description = "Labels applied to every resource this module creates."
-  type    = map(string)
-  default = {}
+  type        = map(string)
+  default     = {}
 }

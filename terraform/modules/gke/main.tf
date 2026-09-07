@@ -24,12 +24,12 @@ resource "google_container_cluster" "this" {
   remove_default_node_pool = true
   initial_node_count       = 1
 
-  min_master_version  = var.min_master_version
-  deletion_protection = var.deletion_protection
-  network             = var.network_id
-  subnetwork          = var.subnet_id
-  networking_mode     = "VPC_NATIVE"
-  datapath_provider   = "ADVANCED_DATAPATH" # Dataplane V2
+  min_master_version    = var.min_master_version
+  deletion_protection   = var.deletion_protection
+  network               = var.network_id
+  subnetwork            = var.subnet_id
+  networking_mode       = "VPC_NATIVE"
+  datapath_provider     = "ADVANCED_DATAPATH" # Dataplane V2
   enable_shielded_nodes = true
 
   resource_labels = var.labels
@@ -191,8 +191,8 @@ resource "google_container_node_pool" "this" {
   initial_node_count = coalesce(each.value.initial_count, each.value.min_count)
 
   autoscaling {
-    min_node_count = each.value.min_count
-    max_node_count = each.value.max_count
+    min_node_count  = each.value.min_count
+    max_node_count  = each.value.max_count
     location_policy = "BALANCED"
   }
 

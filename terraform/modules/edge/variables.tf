@@ -1,11 +1,11 @@
 variable "project_id" {
   description = "GCP project that hosts this environment."
-  type = string
+  type        = string
 }
 
 variable "name_prefix" {
   description = "Resource name prefix for this environment, e.g. buzz-prod."
-  type = string
+  type        = string
 }
 
 variable "domain" {
@@ -31,8 +31,8 @@ variable "dns_zone_name" {
 
 variable "create_dns_zone" {
   description = "Create the Cloud DNS zone rather than using an existing one."
-  type    = bool
-  default = false
+  type        = bool
+  default     = false
 }
 
 variable "allowed_source_ranges" {
@@ -42,8 +42,8 @@ variable "allowed_source_ranges" {
     corporate egress ranges if every client is on the network or VPN — that one
     change is the single biggest reduction in attack surface available here.
   EOT
-  type    = list(string)
-  default = ["0.0.0.0/0"]
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
 }
 
 variable "blocked_country_codes" {
@@ -59,8 +59,8 @@ variable "rate_limit_requests_per_minute" {
     Buzz's own BUZZ_RATE_LIMIT_* settings govern message rates once connected.
     Keep it well above normal client behaviour; a NAT'd office egresses from one IP.
   EOT
-  type    = number
-  default = 1200
+  type        = number
+  default     = 1200
 }
 
 variable "rate_limit_ban_seconds" {
@@ -81,14 +81,14 @@ variable "enable_waf_rules" {
     base64 media in request bodies, and aggressive SQLi/XSS heuristics generate
     false positives on that traffic.
   EOT
-  type    = bool
-  default = true
+  type        = bool
+  default     = true
 }
 
 variable "enable_iap_for_admin" {
   description = "Put the admin console behind Identity-Aware Proxy."
-  type    = bool
-  default = true
+  type        = bool
+  default     = true
 }
 
 variable "iap_members" {
@@ -99,6 +99,6 @@ variable "iap_members" {
 
 variable "labels" {
   description = "Labels applied to every resource this module creates."
-  type    = map(string)
-  default = {}
+  type        = map(string)
+  default     = {}
 }

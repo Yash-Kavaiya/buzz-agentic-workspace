@@ -1,22 +1,22 @@
 variable "project_id" {
   description = "GCP project that hosts this environment."
-  type = string
+  type        = string
 }
 
 variable "region" {
   description = "Primary region. All regional resources land here."
-  type = string
+  type        = string
 }
 
 variable "name_prefix" {
   description = "Resource name prefix for this environment, e.g. buzz-prod."
-  type = string
+  type        = string
 }
 
 variable "repository_id" {
   description = "Artifact Registry repository name."
-  type    = string
-  default = "buzz"
+  type        = string
+  default     = "buzz"
 }
 
 variable "kms_key_id" {
@@ -39,14 +39,14 @@ variable "writers" {
 
 variable "enable_binary_authorization" {
   description = "Require an attestation before an image may run in the cluster."
-  type    = bool
-  default = true
+  type        = bool
+  default     = true
 }
 
 variable "attestor_note_id" {
   description = "Container Analysis note backing the Binary Authorization attestor."
-  type    = string
-  default = "buzz-mirror-attestor-note"
+  type        = string
+  default     = "buzz-mirror-attestor-note"
 }
 
 variable "attestor_public_key_pem" {
@@ -56,8 +56,8 @@ variable "attestor_public_key_pem" {
     default, but you must supply a key (or set enable_binary_authorization to
     false) before the first deploy.
   EOT
-  type    = string
-  default = ""
+  type        = string
+  default     = ""
 }
 
 variable "binauthz_allowlist_patterns" {
@@ -65,7 +65,7 @@ variable "binauthz_allowlist_patterns" {
     Image name patterns exempt from attestation. Kept for the images GKE itself
     injects (system add-ons, GMP collectors) which are not ours to attest.
   EOT
-  type = list(string)
+  type        = list(string)
   default = [
     "gcr.io/gke-release/*",
     "gke.gcr.io/*",
@@ -80,6 +80,6 @@ variable "binauthz_allowlist_patterns" {
 
 variable "labels" {
   description = "Labels applied to every resource this module creates."
-  type    = map(string)
-  default = {}
+  type        = map(string)
+  default     = {}
 }

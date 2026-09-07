@@ -19,8 +19,8 @@ metadata:
   labels:
     {{- include "buzz-gke.labels" . | nindent 4 }}
   annotations:
-    helm.sh/hook: pre-install,pre-upgrade
-    helm.sh/hook-weight: "-20"
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "-6"
     helm.sh/hook-delete-policy: before-hook-creation
 data:
   storage_conformance.py: |
@@ -34,8 +34,18 @@ metadata:
   labels:
     {{- include "buzz-gke.labels" . | nindent 4 }}
   annotations:
-    helm.sh/hook: pre-install,pre-upgrade
-    helm.sh/hook-weight: "-10"
+    # post-install, not pre-install, and weighted to run after the MinIO init
+    # job (-5). On a first install there is nothing to probe before the release
+    # is applied: the object store does not exist yet, and neither does the
+    # Secret holding its credentials. Probing after the store is up and the
+    # bucket exists is the only point at which the answer means anything.
+    #
+    # A failure here fails the release, which with `helm --atomic` rolls it
+    # back. That is the intent: a store that cannot do a conditional write
+    # cannot safely host Buzz's git, and the relay would never become Ready
+    # anyway — this just says so in one legible message instead.
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "0"
     # Kept after success so `kubectl logs` still shows the report; buzzctl
     # removes it once it has read the result.
     helm.sh/hook-delete-policy: before-hook-creation

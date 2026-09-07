@@ -28,7 +28,7 @@ resource "google_redis_instance" "this" {
   redis_configs = {
     # Presence and typing keys are disposable; evict rather than start
     # rejecting writes when memory fills.
-    maxmemory-policy = "allkeys-lru"
+    maxmemory-policy       = "allkeys-lru"
     notify-keyspace-events = ""
   }
 

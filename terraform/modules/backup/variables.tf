@@ -1,16 +1,16 @@
 variable "project_id" {
   description = "GCP project that hosts this environment."
-  type = string
+  type        = string
 }
 
 variable "region" {
   description = "Primary region. All regional resources land here."
-  type = string
+  type        = string
 }
 
 variable "name_prefix" {
   description = "Resource name prefix for this environment, e.g. buzz-prod."
-  type = string
+  type        = string
 }
 
 variable "cluster_id" {
@@ -20,8 +20,8 @@ variable "cluster_id" {
 
 variable "namespace" {
   description = "Kubernetes namespace the Buzz release lives in."
-  type    = string
-  default = "buzz"
+  type        = string
+  default     = "buzz"
 }
 
 variable "dr_bucket_location" {
@@ -32,8 +32,8 @@ variable "dr_bucket_location" {
 
 variable "dr_retention_days" {
   description = "How long DR copies are retained."
-  type    = number
-  default = 90
+  type        = number
+  default     = 90
 }
 
 variable "dr_bucket_retention_locked" {
@@ -43,8 +43,8 @@ variable "dr_bucket_retention_locked" {
     it is what makes the backups ransomware-resistant. Leave false until you are
     certain of the retention period.
   EOT
-  type    = bool
-  default = false
+  type        = bool
+  default     = false
 }
 
 variable "backup_schedule_cron" {
@@ -55,8 +55,8 @@ variable "backup_schedule_cron" {
 
 variable "kms_key_id" {
   description = "Customer-managed encryption key. Empty uses Google-managed keys."
-  type    = string
-  default = ""
+  type        = string
+  default     = ""
 }
 
 variable "minio_backup_service_account" {
@@ -67,6 +67,6 @@ variable "minio_backup_service_account" {
 
 variable "labels" {
   description = "Labels applied to every resource this module creates."
-  type    = map(string)
-  default = {}
+  type        = map(string)
+  default     = {}
 }

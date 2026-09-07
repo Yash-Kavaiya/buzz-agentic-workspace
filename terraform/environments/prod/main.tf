@@ -71,13 +71,13 @@ module "gke" {
 
   node_service_account = module.iam.node_service_account
 
-  enable_public_endpoint     = var.enable_public_control_plane
-  master_authorized_networks = var.master_authorized_networks
-  release_channel            = var.release_channel
-  min_master_version         = var.min_master_version
-  database_encryption_key    = module.kms.gke_key_id
+  enable_public_endpoint      = var.enable_public_control_plane
+  master_authorized_networks  = var.master_authorized_networks
+  release_channel             = var.release_channel
+  min_master_version          = var.min_master_version
+  database_encryption_key     = module.kms.gke_key_id
   enable_binary_authorization = var.enable_binary_authorization
-  deletion_protection        = var.cluster_deletion_protection
+  deletion_protection         = var.cluster_deletion_protection
 
   node_pools = var.node_pools
   labels     = local.labels

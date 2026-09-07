@@ -18,8 +18,8 @@ output "server_ca_cert" {
     transit encryption is disabled. The Helm chart mounts this so the relay's
     rustls trust store can verify a rediss:// handshake.
   EOT
-  value     = var.transit_encryption_enabled ? try(google_redis_instance.this.server_ca_certs[0].cert, "") : ""
-  sensitive = false
+  value       = var.transit_encryption_enabled ? try(google_redis_instance.this.server_ca_certs[0].cert, "") : ""
+  sensitive   = false
 }
 
 output "redis_url" {

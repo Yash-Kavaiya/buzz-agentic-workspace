@@ -36,7 +36,7 @@ fmt: ## Format Terraform in place
 .PHONY: render
 render: ## Render the chart for ENV into rendered/ (needs helm)
 	@mkdir -p rendered
-	@helm dependency build helm/buzz-gke >/dev/null
+	@./scripts/lib/fetch-chart-deps.sh >/dev/null
 	@helm template buzz helm/buzz-gke --namespace buzz \
 		--values helm/buzz-gke/values.yaml \
 		--values helm/buzz-gke/values-$(ENV).yaml \

@@ -1,16 +1,16 @@
 variable "project_id" {
   description = "GCP project that hosts this environment."
-  type = string
+  type        = string
 }
 
 variable "region" {
   description = "Primary region. All regional resources land here."
-  type = string
+  type        = string
 }
 
 variable "name_prefix" {
   description = "Resource name prefix for this environment, e.g. buzz-prod."
-  type = string
+  type        = string
 }
 
 variable "network_id" {
@@ -37,8 +37,8 @@ variable "tier" {
 
 variable "disk_size_gb" {
   description = "Provisioned storage in GiB."
-  type    = number
-  default = 100
+  type        = number
+  default     = 100
 }
 
 variable "availability_type" {
@@ -54,8 +54,8 @@ variable "availability_type" {
 
 variable "database_name" {
   description = "Postgres database Buzz uses."
-  type    = string
-  default = "buzz"
+  type        = string
+  default     = "buzz"
 }
 
 variable "app_user" {
@@ -70,14 +70,14 @@ variable "iam_database_user" {
     runs the Auth Proxy with --auto-iam-authn this is the role it connects as,
     and no database password exists at all.
   EOT
-  type    = string
-  default = ""
+  type        = string
+  default     = ""
 }
 
 variable "backup_retention_days" {
   description = "How many automated backups to retain."
-  type    = number
-  default = 30
+  type        = number
+  default     = 30
 }
 
 variable "transaction_log_retention_days" {
@@ -103,14 +103,14 @@ variable "read_replica_enabled" {
     The relay routes only read-safe operations there; leave off until read load
     actually warrants it, since it doubles the instance bill.
   EOT
-  type    = bool
-  default = false
+  type        = bool
+  default     = false
 }
 
 variable "deletion_protection" {
   description = "Refuse to delete this resource through Terraform."
-  type    = bool
-  default = true
+  type        = bool
+  default     = true
 }
 
 variable "max_connections" {
@@ -118,12 +118,12 @@ variable "max_connections" {
     Must exceed (relay replicas x pool size) plus headroom for migrations and
     buzz-admin. The relay defaults to a writer pool of 50 per replica.
   EOT
-  type    = string
-  default = "400"
+  type        = string
+  default     = "400"
 }
 
 variable "labels" {
   description = "Labels applied to every resource this module creates."
-  type    = map(string)
-  default = {}
+  type        = map(string)
+  default     = {}
 }

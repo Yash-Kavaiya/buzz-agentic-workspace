@@ -82,7 +82,7 @@ digest, and records it. The deploy uses the digest, never the tag.
 Five checks. The fifth is the one that matters: it proves the object store
 honours `If-Match` and `If-None-Match` under 16 concurrent writers. On a first
 install MinIO does not exist yet, so it reports that the probe will run as a
-Helm pre-install hook instead — which is fine, and it runs for real in step 7.
+Helm hook instead — which is fine, and it runs for real in step 7.
 
 ## 7. Deploy
 
@@ -91,8 +91,8 @@ Helm pre-install hook instead — which is fine, and it runs for real in step 7.
 ```
 
 In order: renders values from Terraform output and `config/dev.yaml`, fetches
-the upstream chart, runs the conformance probe as a pre-install hook, installs,
-and waits for rollout.
+the upstream chart, installs, runs the conformance probe against the object
+store once it is up, and waits for rollout.
 
 `--atomic` is set, so a failed rollout rolls back rather than leaving the release
 half-applied.

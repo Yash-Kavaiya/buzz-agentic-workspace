@@ -3,7 +3,13 @@
 # Bucket and application-user provisioning.
 #
 # Runs as a Helm post-install/post-upgrade hook so it lands after MinIO is
-# scheduled but before anyone declares the release healthy. It is idempotent:
+# scheduled but before anyone declares the release healthy.
+#
+# On a first install this can start before External Secrets has reconciled
+# buzz-secrets. That is safe rather than racy: the pod cannot start without the
+# Secret, Kubernetes retries pod creation, and the Job completes as soon as it
+# appears — which is what backoffLimit and activeDeadlineSeconds below are
+# sized for. It is idempotent:
 # every mc command below either ignores an existing object or overwrites the
 # same definition, so re-running on every upgrade is safe and is what keeps the
 # policy in sync when this template changes.

@@ -15,7 +15,7 @@ output "ci_service_account" {
 
 output "github_actions_auth_snippet" {
   description = "Drop-in configuration for the auth step in .github/workflows."
-  value = <<-EOT
+  value       = <<-EOT
     - uses: google-github-actions/auth@v2
       with:
         workload_identity_provider: ${google_iam_workload_identity_pool_provider.github.name}

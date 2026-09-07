@@ -1,26 +1,26 @@
 variable "project_id" {
   description = "GCP project that hosts this environment."
-  type = string
+  type        = string
 }
 
 variable "region" {
   description = "Primary region. All regional resources land here."
-  type = string
+  type        = string
 }
 
 variable "name_prefix" {
   description = "Resource name prefix for this environment, e.g. buzz-prod."
-  type = string
+  type        = string
 }
 
 variable "network_id" {
   description = "VPC network id the resource attaches to."
-  type = string
+  type        = string
 }
 
 variable "private_service_connection" {
   description = "PSA peering to depend on before allocating a private IP."
-  type = string
+  type        = string
 }
 
 variable "tier" {
@@ -39,14 +39,14 @@ variable "memory_size_gb" {
     Buzz uses Redis for pubsub, presence and typing indicators — high churn,
     low residency. 5 GiB is generous for a few thousand connected clients.
   EOT
-  type    = number
-  default = 5
+  type        = number
+  default     = 5
 }
 
 variable "redis_version" {
   description = "Memorystore Redis engine version."
-  type    = string
-  default = "REDIS_7_2"
+  type        = string
+  default     = "REDIS_7_2"
 }
 
 variable "transit_encryption_enabled" {
@@ -64,18 +64,18 @@ variable "transit_encryption_enabled" {
     fallback is AUTH-only on the private VPC (this flag false) — documented in
     docs/90-adr/ADR-005, not silently ignored.
   EOT
-  type    = bool
-  default = true
+  type        = bool
+  default     = true
 }
 
 variable "maintenance_day" {
   description = "Weekday for the managed maintenance window."
-  type    = string
-  default = "SUNDAY"
+  type        = string
+  default     = "SUNDAY"
 }
 
 variable "labels" {
   description = "Labels applied to every resource this module creates."
-  type    = map(string)
-  default = {}
+  type        = map(string)
+  default     = {}
 }

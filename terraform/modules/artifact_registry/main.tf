@@ -84,8 +84,8 @@ resource "google_binary_authorization_attestor" "mirror" {
     dynamic "public_keys" {
       for_each = var.attestor_public_key_pem != "" ? [1] : []
       content {
-        id                                  = "buzz-mirror-key"
-        ascii_armored_pgp_public_key        = var.attestor_public_key_pem
+        id                           = "buzz-mirror-key"
+        ascii_armored_pgp_public_key = var.attestor_public_key_pem
       }
     }
   }

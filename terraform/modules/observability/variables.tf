@@ -1,26 +1,26 @@
 variable "project_id" {
   description = "GCP project that hosts this environment."
-  type = string
+  type        = string
 }
 
 variable "region" {
   description = "Primary region. All regional resources land here."
-  type = string
+  type        = string
 }
 
 variable "name_prefix" {
   description = "Resource name prefix for this environment, e.g. buzz-prod."
-  type = string
+  type        = string
 }
 
 variable "cluster_name" {
   description = "Name of the GKE cluster this applies to."
-  type = string
+  type        = string
 }
 
 variable "relay_hostname" {
   description = "Public hostname clients connect to."
-  type = string
+  type        = string
 }
 
 variable "notification_channels" {
@@ -43,12 +43,12 @@ variable "audit_retention_days" {
 
 variable "create_audit_sink" {
   description = "Export audit logs to BigQuery."
-  type    = bool
-  default = true
+  type        = bool
+  default     = true
 }
 
 variable "labels" {
   description = "Labels applied to every resource this module creates."
-  type    = map(string)
-  default = {}
+  type        = map(string)
+  default     = {}
 }

@@ -65,8 +65,8 @@ redis_transit_encryption = true
 allowed_source_ranges          = ["0.0.0.0/0"]
 rate_limit_requests_per_minute = 1200
 
-dr_bucket_location        = "US"
-dr_retention_days         = 30
+dr_bucket_location         = "US"
+dr_retention_days          = 30
 dr_bucket_retention_locked = false
 
 audit_retention_days = 90

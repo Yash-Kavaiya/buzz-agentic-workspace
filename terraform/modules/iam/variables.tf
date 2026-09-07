@@ -1,11 +1,11 @@
 variable "project_id" {
   description = "GCP project that hosts this environment."
-  type = string
+  type        = string
 }
 
 variable "name_prefix" {
   description = "Resource name prefix for this environment, e.g. buzz-prod."
-  type = string
+  type        = string
 }
 
 variable "namespace" {
@@ -27,8 +27,8 @@ variable "external_secrets_ksa" {
 
 variable "external_secrets_namespace" {
   description = "Namespace the External Secrets Operator is installed in."
-  type    = string
-  default = "external-secrets"
+  type        = string
+  default     = "external-secrets"
 }
 
 variable "minio_backup_ksa" {
@@ -39,6 +39,6 @@ variable "minio_backup_ksa" {
 
 variable "labels" {
   description = "Labels applied to every resource this module creates."
-  type    = map(string)
-  default = {}
+  type        = map(string)
+  default     = {}
 }

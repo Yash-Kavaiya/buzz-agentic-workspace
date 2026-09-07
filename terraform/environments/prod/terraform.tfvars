@@ -82,8 +82,8 @@ iap_members = [
   # "group:buzz-operators@example.com",
 ]
 
-dr_bucket_location        = "NAM4"
-dr_retention_days         = 90
+dr_bucket_location         = "NAM4"
+dr_retention_days          = 90
 dr_bucket_retention_locked = false
 
 audit_retention_days = 400

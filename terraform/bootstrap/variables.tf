@@ -50,8 +50,8 @@ variable "labels" {
   description = "Labels applied to every bootstrap-created resource."
   type        = map(string)
   default = {
-    platform  = "buzz"
-    component = "bootstrap"
+    platform   = "buzz"
+    component  = "bootstrap"
     managed-by = "terraform"
   }
 }

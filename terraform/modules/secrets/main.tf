@@ -29,13 +29,13 @@ locals {
 
   # Container only — populated out-of-band by buzzctl.
   externally_populated_secrets = {
-    "relay-private-key" = "64-char hex Nostr secret key. The relay's identity; rotation is an identity change, not a credential refresh."
-    "git-hook-hmac"     = "32+ char shared secret for git hook authentication. Required whenever replicaCount > 1."
-    "minio-access-key"  = "MinIO access key the relay uses as BUZZ_S3_ACCESS_KEY."
-    "minio-secret-key"  = "MinIO secret key the relay uses as BUZZ_S3_SECRET_KEY."
-    "minio-root-user"   = "MinIO root user. Used by the bucket-init job and break-glass access only."
+    "relay-private-key"   = "64-char hex Nostr secret key. The relay's identity; rotation is an identity change, not a credential refresh."
+    "git-hook-hmac"       = "32+ char shared secret for git hook authentication. Required whenever replicaCount > 1."
+    "minio-access-key"    = "MinIO access key the relay uses as BUZZ_S3_ACCESS_KEY."
+    "minio-secret-key"    = "MinIO secret key the relay uses as BUZZ_S3_SECRET_KEY."
+    "minio-root-user"     = "MinIO root user. Used by the bucket-init job and break-glass access only."
     "minio-root-password" = "MinIO root password."
-    "klipy-api-key"     = "Optional KLIPY GIF search key. Leave with no version to keep GIF search disabled."
+    "klipy-api-key"       = "Optional KLIPY GIF search key. Leave with no version to keep GIF search disabled."
   }
 
   all_secret_ids = concat(

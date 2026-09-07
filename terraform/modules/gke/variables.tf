@@ -1,36 +1,36 @@
 variable "project_id" {
   description = "GCP project that hosts this environment."
-  type = string
+  type        = string
 }
 
 variable "region" {
   description = "Primary region. All regional resources land here."
-  type = string
+  type        = string
 }
 
 variable "name_prefix" {
   description = "Resource name prefix for this environment, e.g. buzz-prod."
-  type = string
+  type        = string
 }
 
 variable "network_id" {
   description = "VPC network id the resource attaches to."
-  type = string
+  type        = string
 }
 
 variable "subnet_id" {
   description = "Subnet id the cluster's nodes live in."
-  type = string
+  type        = string
 }
 
 variable "pods_range_name" {
   description = "Secondary range name for Pod IPs."
-  type = string
+  type        = string
 }
 
 variable "services_range_name" {
   description = "Secondary range name for ClusterIP Services."
-  type = string
+  type        = string
 }
 
 variable "master_cidr" {
@@ -59,8 +59,8 @@ variable "enable_public_endpoint" {
     Connect gateway, or Cloud VPN. Set it true only for a dev cluster you drive
     from a laptop.
   EOT
-  type    = bool
-  default = false
+  type        = bool
+  default     = false
 }
 
 variable "release_channel" {
@@ -80,8 +80,8 @@ variable "min_master_version" {
     runs as a native sidecar (an init container with restartPolicy: Always),
     which is only honoured from 1.29 onwards.
   EOT
-  type    = string
-  default = "1.31"
+  type        = string
+  default     = "1.31"
 }
 
 variable "database_encryption_key" {
@@ -91,8 +91,8 @@ variable "database_encryption_key" {
 
 variable "enable_binary_authorization" {
   description = "Require an attestation before an image may run in the cluster."
-  type    = bool
-  default = true
+  type        = bool
+  default     = true
 }
 
 variable "enable_backup_agent" {
@@ -119,8 +119,8 @@ variable "maintenance_start_time" {
 
 variable "maintenance_recurrence" {
   description = "RRULE for the maintenance window."
-  type    = string
-  default = "FREQ=WEEKLY;BYDAY=SA,SU"
+  type        = string
+  default     = "FREQ=WEEKLY;BYDAY=SA,SU"
 }
 
 variable "node_pools" {
@@ -151,8 +151,8 @@ variable "node_pools" {
 
 variable "labels" {
   description = "Labels applied to every resource this module creates."
-  type    = map(string)
-  default = {}
+  type        = map(string)
+  default     = {}
 }
 
 variable "deletion_protection" {

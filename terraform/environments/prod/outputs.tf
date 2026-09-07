@@ -13,11 +13,11 @@ output "platform" {
     release     = var.helm_release_name
 
     cluster = {
-      name             = module.gke.cluster_name
-      location         = module.gke.location
-      get_credentials  = module.gke.get_credentials_command
-      workload_pool    = module.gke.workload_identity_pool
-      node_pools       = module.gke.node_pool_names
+      name            = module.gke.cluster_name
+      location        = module.gke.location
+      get_credentials = module.gke.get_credentials_command
+      workload_pool   = module.gke.workload_identity_pool
+      node_pools      = module.gke.node_pool_names
     }
 
     identity = {
@@ -58,9 +58,9 @@ output "platform" {
     }
 
     secrets = {
-      prefix                  = module.secrets.prefix
-      ids                     = module.secrets.secret_ids
-      awaiting_buzzctl_init   = module.secrets.externally_populated_secret_ids
+      prefix                = module.secrets.prefix
+      ids                   = module.secrets.secret_ids
+      awaiting_buzzctl_init = module.secrets.externally_populated_secret_ids
     }
 
     backup = {

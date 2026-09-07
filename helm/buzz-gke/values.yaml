@@ -232,6 +232,21 @@ buzz:
 
   replicaCount: 3
 
+  # Declared here even though these match upstream's defaults, because this
+  # chart's own templates need them: the Gateway's HealthCheckPolicy targets
+  # the health port and the admin HTTPRoute targets the app port. A parent
+  # chart cannot read a subchart's defaults, so leaving this out makes those
+  # templates fall back to the numbers hardcoded in _helpers.tpl instead of
+  # tracking whatever is actually configured.
+  #
+  #   3000  app: WebSocket, REST, web bundle
+  #   8080  health: /_liveness, /_readiness  <- what the load balancer probes
+  #   9102  metrics: Prometheus
+  service:
+    port: 3000
+    healthPort: 8080
+    metricsPort: 9102
+
   secrets:
     # Rendered by External Secrets. The chart's autogeneration path is not
     # GitOps-safe and is never used here.

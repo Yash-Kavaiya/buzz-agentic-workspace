@@ -25,7 +25,7 @@ spec:
       type: HTTP
       httpHealthCheck:
         portSpecification: USE_FIXED_PORT
-        port: {{ .Values.buzz.service.healthPort | default 8080 }}
+        port: {{ include "buzz-gke.healthPort" . }}
         requestPath: /_readiness
   targetRef:
     group: ""

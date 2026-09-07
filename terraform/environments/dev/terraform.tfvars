@@ -6,10 +6,10 @@ project_id  = "REPLACE-WITH-PROJECT-ID"
 region      = "us-central1"
 environment = "dev"
 
-domain         = "example.com"
-relay_hostname = "buzz-dev.example.com"
-admin_hostname = "buzz-dev-admin.example.com"
-dns_zone_name  = ""
+domain          = "example.com"
+relay_hostname  = "buzz-dev.example.com"
+admin_hostname  = "buzz-dev-admin.example.com"
+dns_zone_name   = ""
 create_dns_zone = false
 
 # Reachable from a laptop. Never do this above dev.
@@ -64,8 +64,8 @@ redis_transit_encryption = true
 allowed_source_ranges          = ["0.0.0.0/0"]
 rate_limit_requests_per_minute = 3000
 
-dr_bucket_location        = "US"
-dr_retention_days         = 14
+dr_bucket_location         = "US"
+dr_retention_days          = 14
 dr_bucket_retention_locked = false
 
 audit_retention_days = 30

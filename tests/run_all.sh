@@ -58,6 +58,7 @@ if missing_python_dep hcl2; then
   printf '%s   skipped: needs python-hcl2 (pip install python-hcl2)%s\n' "$DIM" "$RESET"
 else
   run "terraform invariants" python3 tests/lint_terraform.py
+  run "terraform module wiring" python3 tests/lint_terraform_wiring.py
 fi
 
 # ── Shell ────────────────────────────────────────────────────────────────────
@@ -87,14 +88,19 @@ if command -v terraform >/dev/null 2>&1; then
       terraform -chdir=terraform/environments/$env validate"
   done
   run "terraform fmt" terraform fmt -check -recursive terraform/
+elif command -v tofu >/dev/null 2>&1; then
+  # OpenTofu shares hclwrite with Terraform, so `tofu fmt` produces byte-identical
+  # output. `validate` still needs provider schemas and so is left to CI.
+  run "tofu fmt (equivalent to terraform fmt)" tofu fmt -check -recursive terraform/
+  printf '%s   note: validate needs provider schemas; CI runs terraform validate%s\n' "$DIM" "$RESET"
 else
   printf '\n%s── terraform validate%s\n' "$BOLD" "$RESET"
-  printf '%s   skipped: terraform is not installed. CI runs it.%s\n' "$DIM" "$RESET"
+  printf '%s   skipped: neither terraform nor tofu is installed. CI runs it.%s\n' "$DIM" "$RESET"
 fi
 
 if command -v helm >/dev/null 2>&1; then
   run "helm lint" bash -c "
-    helm dependency build helm/buzz-gke >/dev/null &&
+    ./scripts/lib/fetch-chart-deps.sh >/dev/null &&
     helm template buzz helm/buzz-gke --namespace buzz \
       --values helm/buzz-gke/values.yaml \
       --values helm/buzz-gke/values-prod.yaml \

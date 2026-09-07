@@ -420,7 +420,7 @@ cmd_preflight() {
     fi
   else
     dim "  -- MinIO is not deployed yet; the conformance probe runs as a Helm"
-    dim "     pre-install hook on the first 'buzzctl deploy'"
+    dim "     post-install hook on the first 'buzzctl deploy', once the store is up"
   fi
 
   echo >&2
@@ -439,13 +439,13 @@ run_storage_conformance() {
 
   kubectl -n "$namespace" delete job -l buzz.io/job=preflight --ignore-not-found >/dev/null 2>&1 || true
 
-  # Runs the same probe the chart's pre-install hook runs, on demand, against
+  # Runs the same probe the chart's install hook runs, on demand, against
   # the live store. Sourced from the chart so there is exactly one copy.
   kubectl -n "$namespace" create configmap "$job" \
     --from-file=storage_conformance.py="$CHART_DIR/files/storage_conformance.py" >/dev/null
 
   # Probe parameters come from the same values the chart uses, so an on-demand
-  # run and the pre-install hook exercise identical contention.
+  # run and the chart's hook exercise identical contention.
   local probe_settings image bucket region writers rounds
   probe_settings="$(python3 - "$CHART_DIR/values.yaml" "$CHART_DIR/values-$env.yaml" <<'PYEOF'
 import sys, yaml
@@ -547,9 +547,8 @@ cluster enforces Binary Authorization against the digest."
     "${redis_ca_arg[@]}" \
     --output "$state_dir/values.generated.yaml"
 
-  step "Resolving chart dependencies"
-  helm dependency build "$CHART_DIR" 2>/dev/null \
-    || helm dependency update "$CHART_DIR" \
+  step "Vendoring the upstream chart"
+  "$SCRIPT_DIR/lib/fetch-chart-deps.sh" "$CHART_DIR" \
     || die "could not fetch the upstream Buzz chart from $UPSTREAM_CHART"
 
   local -a helm_args=(

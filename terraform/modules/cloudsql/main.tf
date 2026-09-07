@@ -10,7 +10,7 @@ resource "random_id" "suffix" {
 }
 
 resource "google_sql_database_instance" "this" {
-  project          = var.project_id
+  project = var.project_id
   # Cloud SQL reserves a deleted instance name for a week; the suffix keeps a
   # rebuild from failing on "instance name already in use".
   name             = "${var.name_prefix}-pg-${random_id.suffix.hex}"

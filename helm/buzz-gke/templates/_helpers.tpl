@@ -51,6 +51,28 @@ app.kubernetes.io/component: object-storage
 {{- end -}}
 
 {{/*
+Relay ports.
+
+The parent chart cannot see the subchart's own defaults — `.Values.buzz` holds
+only what this chart's values set, so reaching straight into
+`.Values.buzz.service.port` is a nil-pointer whenever `service` is not declared
+here. `dig` walks the path safely and falls back to upstream's default, and
+values.yaml declares the block explicitly so the numbers are visible in one
+place rather than implied.
+*/}}
+{{- define "buzz-gke.relayPort" -}}
+{{- dig "service" "port" 3000 .Values.buzz -}}
+{{- end -}}
+
+{{- define "buzz-gke.healthPort" -}}
+{{- dig "service" "healthPort" 8080 .Values.buzz -}}
+{{- end -}}
+
+{{- define "buzz-gke.metricsPort" -}}
+{{- dig "service" "metricsPort" 9102 .Values.buzz -}}
+{{- end -}}
+
+{{/*
 Internal MinIO endpoint the relay dials. Path-style addressing is mandatory:
 the headless Service resolves one hostname, never <bucket>.<service>.
 */}}
@@ -89,7 +111,7 @@ expensive to diagnose, so refusing to render is the kinder outcome.
 {{- fail "buzz.image.digest is required. Run `buzzctl images mirror <env>` to mirror and pin the relay image." -}}
 {{- end -}}
 {{- if gt (int .Values.buzz.replicaCount) 1 -}}
-{{- if .Values.buzz.redis.enabled -}}
+{{- if dig "redis" "enabled" false .Values.buzz -}}
 {{- fail "buzz.redis.enabled must be false: replicaCount > 1 requires the external Memorystore instance, not the bundled eval Redis." -}}
 {{- end -}}
 {{- end -}}

@@ -28,7 +28,7 @@ resource "google_dns_managed_zone" "this" {
 }
 
 locals {
-  zone_name = var.create_dns_zone ? google_dns_managed_zone.this[0].name : var.dns_zone_name
+  zone_name  = var.create_dns_zone ? google_dns_managed_zone.this[0].name : var.dns_zone_name
   manage_dns = local.zone_name != ""
 }
 
