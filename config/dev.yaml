@@ -1,0 +1,37 @@
+# Per-environment identity configuration.
+#
+# Everything in this file is a PUBLIC key or a public setting. Nostr pubkeys are
+# meant to be shared — that is what makes them checkable in code review. Nothing
+# secret belongs here; secrets live in Secret Manager.
+
+# 64-char lowercase hex pubkey of the workspace owner. Generate one with
+# `buzzctl keygen` and keep the private half in a password manager or hardware
+# token. Changing this later changes who owns the workspace.
+ownerPubkey: ""
+
+# Pubkeys with moderation rights on the admin console (RELAY_OPERATOR_PUBKEYS).
+# The owner is an operator implicitly; list others explicitly.
+operators: []
+
+# Relay message-rate limits. These are per-identity and enforced by the relay
+# itself, distinct from the Cloud Armor request ceiling at the edge.
+rateLimits:
+  humanMessagesPerMin: 60
+  humanApiCallsPerMin: 300
+  humanWsEventsPerSec: 10
+  agentStandardMessagesPerMin: 120
+  agentStandardApiCallsPerMin: 600
+  agentElevatedMessagesPerMin: 300
+  agentPlatformMessagesPerMin: 600
+
+# Origins permitted to call the relay's HTTP API from a browser. Empty means
+# same-origin only, which is correct unless you host the web client elsewhere.
+corsOrigins: []
+
+# Per-upload moderation records. Turning this on stores the connecting address
+# reported by your edge against each upload. Operators hosting communities for
+# other people may have legal obligations that require it; it is off by default
+# because Buzz never collects IP addresses unless asked to.
+uploadRecords:
+  enabled: false
+  ipHeader: ""

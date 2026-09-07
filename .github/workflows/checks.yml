@@ -1,0 +1,148 @@
+name: checks
+
+# The fast lane: everything that needs no cloud credentials. Runs on every push
+# and pull request, and is what should gate a merge.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shell:
+    name: shell
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          # -x follows `source`, so lib/common.sh is analysed in the context
+          # buzzctl actually uses it.
+          shellcheck -S warning -x scripts/buzzctl scripts/lib/*.sh
+
+      - name: buzzctl runs without a cloud
+        run: |
+          ./scripts/buzzctl version
+          ./scripts/buzzctl help
+          # Key generation must work on a machine with nothing installed —
+          # it is implemented against the standard library for this reason.
+          ./scripts/buzzctl keygen --format json | python3 -c '
+          import json, sys
+          key = json.load(sys.stdin)
+          assert len(key["pubkey_hex"]) == 64, key
+          assert key["npub"].startswith("npub1"), key
+          print("keygen ok")'
+
+  python:
+    name: python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install --quiet pyyaml boto3 python-hcl2 yamllint
+
+      - name: unit and conformance tests
+        run: ./tests/run_all.sh
+
+      - name: yamllint
+        run: yamllint -c .yamllint.yml config/ helm/buzz-gke/values*.yaml
+
+  terraform:
+    name: terraform
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, staging, prod]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: fmt
+        run: terraform fmt -check -recursive terraform/
+
+      - name: validate
+        # -backend=false validates the configuration without touching remote
+        # state, so this needs no credentials.
+        run: |
+          terraform -chdir=terraform/environments/${{ matrix.environment }} init -backend=false
+          terraform -chdir=terraform/environments/${{ matrix.environment }} validate
+
+  helm:
+    name: helm
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, staging, prod]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: vendor the upstream chart
+        run: ./scripts/lib/fetch-chart-deps.sh
+
+      - name: lint
+        run: |
+          helm lint helm/buzz-gke \
+            --values helm/buzz-gke/values.yaml \
+            --values helm/buzz-gke/values-${{ matrix.environment }}.yaml \
+            --set gcp.projectId=ci-project \
+            --set gcp.namePrefix=buzz-${{ matrix.environment }} \
+            --set buzz.relayUrl=wss://buzz.example.com \
+            --set buzz.ownerPubkey=0000000000000000000000000000000000000000000000000000000000000000 \
+            --set buzz.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+      - name: template
+        run: |
+          mkdir -p rendered
+          helm template buzz helm/buzz-gke \
+            --namespace buzz \
+            --values helm/buzz-gke/values.yaml \
+            --values helm/buzz-gke/values-${{ matrix.environment }}.yaml \
+            --values .github/ci-values.yaml \
+            > rendered/${{ matrix.environment }}.yaml
+          echo "rendered $(grep -c '^kind:' rendered/${{ matrix.environment }}.yaml) resources"
+
+      - name: kubeconform
+        run: |
+          curl -sSLo kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar xf kubeconform.tar.gz kubeconform
+          # The Gateway API, GMP, External Secrets and GKE policy CRDs are not
+          # in the built-in schema set; ignore-missing-schemas keeps the check
+          # useful for core resources without failing on them.
+          ./kubeconform -strict -summary -ignore-missing-schemas \
+            rendered/${{ matrix.environment }}.yaml
+
+      - name: conftest
+        run: |
+          CONFTEST=0.56.0
+          BASE=https://github.com/open-policy-agent/conftest/releases/download
+          curl -sSL "$BASE/v$CONFTEST/conftest_${CONFTEST}_Linux_x86_64.tar.gz" \
+            | tar xz conftest
+          ./conftest test --policy policy/conftest rendered/${{ matrix.environment }}.yaml
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rendered-${{ matrix.environment }}
+          path: rendered/
+          retention-days: 7

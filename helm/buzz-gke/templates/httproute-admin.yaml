@@ -1,0 +1,53 @@
+{{- include "buzz-gke.validate" . -}}
+{{- if and .Values.gateway.enabled .Values.gateway.admin.enabled .Values.buzz.enabled }}
+# The moderation console, on its own hostname, behind IAP.
+#
+# It is a separate hostname rather than a path prefix for a reason: IAP is
+# applied per backend service, and the relay's own backend must stay
+# IAP-free so Nostr clients can connect. Splitting by host gives two backends;
+# splitting by path would not.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "buzz-gke.fullname" . }}-admin
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buzz-gke.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ .Values.gateway.name }}
+      sectionName: https
+  hostnames:
+    - {{ .Values.gcp.edge.adminHostname | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: {{ include "buzz-gke.relayServiceName" . }}
+          port: {{ include "buzz-gke.relayPort" . }}
+{{- if .Values.gateway.iap.enabled }}
+---
+apiVersion: networking.gke.io/v1
+kind: GCPBackendPolicy
+metadata:
+  name: {{ include "buzz-gke.fullname" . }}-admin-iap
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buzz-gke.labels" . | nindent 4 }}
+spec:
+  default:
+    iap:
+      enabled: true
+      # Secret holding client_id and client_secret for the IAP OAuth client.
+      # Created out of band; buzzctl does not mint OAuth clients.
+      oauth2ClientSecret:
+        name: {{ .Values.gateway.iap.oauthSecretName }}
+    timeoutSec: 300
+  targetRef:
+    group: ""
+    kind: Service
+    name: {{ include "buzz-gke.relayServiceName" . }}
+{{- end }}
+{{- end }}

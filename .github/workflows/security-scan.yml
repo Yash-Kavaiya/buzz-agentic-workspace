@@ -1,0 +1,91 @@
+name: security scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, so a newly disclosed vulnerability in a pinned dependency surfaces
+    # without waiting for someone to open a pull request.
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  secrets:
+    name: secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # gitleaks needs history to scan past commits
+
+      # Reads .gitleaks.toml from the repository root, which keeps the default
+      # rules and records the false positives with the reason each one is a
+      # false positive.
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: false
+
+  iac:
+    name: infrastructure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: trivy config
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: .
+          format: sarif
+          output: trivy-config.sarif
+          severity: HIGH,CRITICAL
+          # Failing the build here would make every finding a merge blocker,
+          # including ones this repository has deliberately accepted and
+          # documented in docs/90-adr. Findings go to the Security tab, where
+          # they can be triaged. The invariants that are NOT negotiable are
+          # enforced by policy/conftest/terraform.rego, which does fail.
+          exit-code: '0'
+
+      - name: upload results
+        uses: github/codeql-action/upload-sarif@v3
+        # Code scanning is not enabled on every repository, and a scan that
+        # cannot upload should not fail the build — the findings are still in
+        # the job log.
+        continue-on-error: true
+        if: always()
+        with:
+          sarif_file: trivy-config.sarif
+          category: trivy-config
+
+  images:
+    name: pinned images
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The images this platform runs alongside the relay. The relay's own
+        # image is scanned by whatever gates the mirror; these are ours to pin.
+        image:
+          - quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+          - quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+          - gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: trivy image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ matrix.image }}
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          # Informational: an upstream CVE with no fix available is not
+          # something this repository can resolve by failing its own build.
+          # Track them, bump the pin when a fix ships.
+          exit-code: '0'

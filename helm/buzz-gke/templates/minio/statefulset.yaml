@@ -1,0 +1,152 @@
+{{- include "buzz-gke.validate" . -}}
+{{- if .Values.minio.enabled }}
+# Distributed MinIO — Buzz's object store for media, git packs, and the git
+# manifest pointer.
+#
+# Why MinIO and not GCS: Buzz serialises concurrent git pushes with an S3
+# conditional PUT (If-Match on the manifest pointer's ETag, If-None-Match: *
+# for creation). Google Cloud Storage supports ETag preconditions on reads
+# only; its write preconditions are generation-based. The relay runs a
+# conformance probe for exactly this at startup and treats failure as fatal,
+# so GCS does not merely degrade — it prevents the relay from ever becoming
+# Ready. See docs/90-adr/ADR-001-object-storage.md.
+#
+# {{ .Values.minio.replicas }} servers x 1 drive. MinIO derives the erasure set
+# from the server count at first start; changing minio.replicas later is a
+# migration, not a scale-up.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "buzz-gke.minio.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buzz-gke.minio.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "buzz-gke.minio.fullname" . }}-headless
+  replicas: {{ .Values.minio.replicas }}
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "buzz-gke.minio.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "buzz-gke.minio.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Roll the set when credentials rotate.
+        buzz.io/credentials-revision: {{ .Values.minio.credentialsRevision | default "1" | quote }}
+    spec:
+      {{- with .Values.minio.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.minio.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # Hard anti-affinity, not preferred: two MinIO servers on one node means
+      # one node failure takes two drives out of the erasure set at once, which
+      # is exactly the correlated failure erasure coding is supposed to survive.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  {{- include "buzz-gke.minio.selectorLabels" . | nindent 18 }}
+              topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: minio
+          image: {{ .Values.minio.image | quote }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: [ALL]
+          args:
+            - server
+            {{- if gt (int .Values.minio.replicas) 1 }}
+            # Ordinal expansion: MinIO resolves each peer through the headless
+            # Service, so the set is defined by DNS rather than by discovery.
+            - {{ printf "http://%s-{0...%d}.%s-headless.%s.svc.cluster.local/data" (include "buzz-gke.minio.fullname" .) (sub (int .Values.minio.replicas) 1) (include "buzz-gke.minio.fullname" .) .Release.Namespace }}
+            {{- else }}
+            - /data
+            {{- end }}
+            - --console-address
+            - :9001
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "buzz-gke.minio.fullname" . }}-root
+                  key: MINIO_ROOT_USER
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "buzz-gke.minio.fullname" . }}-root
+                  key: MINIO_ROOT_PASSWORD
+            # Metrics are scraped in-cluster by GMP over a NetworkPolicy that
+            # admits only the collector namespace, so a bearer token here would
+            # add a rotation burden without adding a boundary.
+            - name: MINIO_PROMETHEUS_AUTH_TYPE
+              value: public
+            - name: MINIO_UPDATE
+              value: "off"
+            {{- with .Values.minio.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: api
+              containerPort: 9000
+            - name: console
+              containerPort: 9001
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          # Liveness on /live: it reports the process. Readiness on the
+          # cluster-aware endpoint: it reports whether this server can actually
+          # serve reads and writes given the state of its peers.
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: api
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: api
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /minio/health/live
+              port: api
+            failureThreshold: 30
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.minio.resources | nindent 12 }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "buzz-gke.minio.labels" . | nindent 10 }}
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: {{ .Values.minio.persistence.storageClass | quote }}
+        resources:
+          requests:
+            storage: {{ .Values.minio.persistence.size }}
+{{- end }}

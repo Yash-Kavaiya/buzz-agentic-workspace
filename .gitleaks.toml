@@ -1,0 +1,44 @@
+# gitleaks configuration.
+#
+# The default rules stay on; this file only records the false positives, with
+# the reason each one is a false positive. An allowlist entry without a reason
+# is how a real secret eventually gets ignored.
+
+[extend]
+useDefault = true
+
+[[rules]]
+# Keep the built-in generic-api-key rule, but do not let it fire on the
+# object-storage conformance probe. That file contains no credentials: it reads
+# them from the environment. What trips the rule is its long high-entropy
+# quoted strings — phase names, ETag tokens like "deadbeef", and error messages
+# — none of which is a secret.
+id = "generic-api-key"
+description = "Generic API Key"
+regex = '''(?i)(?:key|api|token|secret|client|passwd|password|auth|access)(?:[0-9a-z\-_\t .]{0,20})(?:[\s|']|[\s|"]){0,3}(?:=|>|:{1,3}=|\|\|:|<=|=>|:|\?=)(?:'|\"|\s|=|\x60){0,5}([0-9a-z\-_.=]{10,150})(?:['|\"|\n|\r|\s|\x60|;|\\]|$)'''
+keywords = ["key", "api", "token", "secret", "client", "passwd", "password", "auth", "access"]
+
+  [rules.allowlist]
+  paths = ['''helm/buzz-gke/files/storage_conformance\.py''']
+
+[allowlist]
+description = "Placeholders and documented examples, none of which are live credentials"
+
+paths = [
+  # Every value here is deliberately and obviously fake, and exists so
+  # `helm template` can render without a cloud account.
+  '''\.github/ci-values\.yaml''',
+  # Test fixtures use all-zero and repeated-byte keys.
+  '''tests/test_render_values\.py''',
+  # Documentation quotes the NIP-19 reference vector, which is published in the
+  # specification precisely so implementations can test against it.
+  '''docs/.*\.md''',
+]
+
+regexes = [
+  # All-zero or single-repeated-byte hex, used as placeholder pubkeys and digests.
+  '''(?i)\b0{32,}\b''',
+  '''(?i)\b(?:ab|aa|cd){16,}\b''',
+  # REPLACE_WITH markers copied from the upstream chart's secret sample.
+  '''REPLACE[_A-Z]*''',
+]

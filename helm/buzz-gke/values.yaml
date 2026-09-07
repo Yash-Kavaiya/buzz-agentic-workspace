@@ -1,0 +1,338 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# buzz-gke — default values
+#
+# Three value layers are composed at deploy time by `buzzctl deploy`:
+#
+#   values.yaml            this file — safe defaults and structure
+#   values-<env>.yaml      environment choices, committed and reviewed
+#   values.generated.yaml  project coordinates rendered from terraform output
+#
+# Never put a project id, a hostname, or a Cloud SQL connection name in the
+# first two. They come from Terraform, so that the same reviewed values apply
+# cleanly to every environment.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── GKE / GCP coordinates ────────────────────────────────────────────────────
+# Every field here is filled in by buzzctl from `terraform output platform`.
+gcp:
+  projectId: ""
+  region: ""
+  # Prefix Terraform gave every resource, e.g. buzz-prod.
+  namePrefix: ""
+
+  workloadIdentity:
+    # GSA the relay Pod impersonates. Bound to the relay's KSA in Terraform.
+    relayServiceAccount: ""
+    minioBackupServiceAccount: ""
+
+  cloudsql:
+    # project:region:instance — the Auth Proxy sidecar's only argument.
+    connectionName: ""
+    replicaConnectionName: ""
+    # IAM database authentication removes the database password entirely.
+    # Requires the relay GSA to be registered as a Cloud SQL IAM user.
+    autoIamAuthn: false
+
+  edge:
+    # Named global address created by Terraform.
+    gatewayIpName: ""
+    certificateMapName: ""
+    securityPolicyName: ""
+    relayHostname: ""
+    adminHostname: ""
+
+  redis:
+    # Memorystore terminates TLS with a private Google CA. When transit
+    # encryption is on, buzzctl writes the PEM here and the chart mounts it
+    # into the relay's trust store.
+    transitEncryption: true
+    serverCaCertificate: ""
+
+  backup:
+    drBucket: ""
+
+# ── External Secrets ─────────────────────────────────────────────────────────
+# ESO reads Secret Manager and materialises the single Kubernetes Secret the
+# upstream chart consumes via secrets.existingSecret. The relay itself has no
+# Secret Manager access; only ESO does.
+externalSecrets:
+  enabled: true
+  # Set false if a ClusterSecretStore already exists cluster-wide.
+  createClusterSecretStore: true
+  clusterSecretStoreName: buzz-gcp
+  serviceAccountName: external-secrets
+  serviceAccountNamespace: external-secrets
+  targetSecretName: buzz-secrets
+  refreshInterval: 1h
+
+  # Logical name -> Secret Manager secret id suffix. buzzctl prefixes each with
+  # gcp.namePrefix. Keys land in the target Secret under the env var names the
+  # upstream chart expects (see deploy/charts/buzz/examples/secret-sample.yaml).
+  keys:
+    BUZZ_RELAY_PRIVATE_KEY: relay-private-key
+    BUZZ_GIT_HOOK_HMAC_SECRET: git-hook-hmac
+    DATABASE_URL: database-url
+    REDIS_URL: redis-url
+    BUZZ_S3_ACCESS_KEY: minio-access-key
+    BUZZ_S3_SECRET_KEY: minio-secret-key
+
+  # Added to the target Secret only when a version exists. A secret with no
+  # version makes the whole ExternalSecret fail, so anything optional lives here.
+  optionalKeys:
+    READ_DATABASE_URL: read-database-url
+    BUZZ_KLIPY_API_KEY: klipy-api-key
+
+# ── Gateway API ──────────────────────────────────────────────────────────────
+gateway:
+  enabled: true
+  name: buzz
+  className: gke-l7-global-external-managed
+
+  # Long-lived WebSockets. The Google LB's default backend timeout is 30s,
+  # which silently severs idle connections; the relay expects to hold them.
+  backendTimeoutSeconds: 3600
+
+  # The relay is stateless with respect to routing (Redis carries fanout), so
+  # affinity is a latency optimisation, not a correctness requirement.
+  sessionAffinity:
+    type: CLIENT_IP
+    cookieTtlSec: 3600
+
+  # IAP protects the admin console only. It CANNOT protect the relay: Buzz
+  # desktop and CLI clients authenticate with Nostr keys over a WebSocket and
+  # carry no Google session cookie, so IAP would reject every legitimate client.
+  iap:
+    enabled: true
+    oauthSecretName: buzz-iap-oauth
+
+  admin:
+    # Serves the moderation console on its own hostname. Requires
+    # BUZZ_ADMIN_HOST and RELAY_OPERATOR_PUBKEYS in relay.extraEnv, which
+    # buzzctl renders from the operators list below.
+    enabled: true
+
+# ── Monitoring ───────────────────────────────────────────────────────────────
+# Google Managed Prometheus. Upstream ships a ServiceMonitor, which would need
+# the Prometheus Operator CRDs; PodMonitoring needs nothing beyond GMP being on.
+monitoring:
+  enabled: true
+  interval: 30s
+  # Relay metric families are documented in the upstream chart README. The
+  # cardinality ceilings quoted there assume no extra labels are added here.
+  extraMetricRelabeling: []
+
+# ── Object storage ───────────────────────────────────────────────────────────
+# MinIO, in-cluster, distributed.
+#
+# Read docs/90-adr/ADR-001-object-storage.md before changing this. Buzz's git
+# hosting serialises concurrent pushes with S3 conditional writes (If-Match /
+# If-None-Match). Google Cloud Storage supports ETag preconditions on reads
+# only, so GCS cannot back Buzz — the relay's own startup conformance probe
+# rejects it and readiness never opens. MinIO is the backend upstream's
+# concurrency tests are written against.
+minio:
+  enabled: true
+  image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+  mcImage: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+
+  # 4 servers x 1 drive = EC:2 — two nodes can be lost without data loss and
+  # one without losing write availability. Do not run 1 or 2 in production:
+  # below 4 there is no erasure coding at all.
+  replicas: 4
+
+  bucket: buzz-media
+  region: us-east-1
+
+  persistence:
+    size: 500Gi
+    storageClass: premium-rwo
+
+  resources:
+    requests:
+      cpu: "1"
+      memory: 4Gi
+    limits:
+      cpu: "4"
+      memory: 8Gi
+
+  # Matches the taint on the Terraform-managed minio node pool.
+  nodeSelector:
+    buzz.io/workload: minio
+  tolerations:
+    - key: buzz.io/minio
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+
+  # Object versioning is required by the whole-community deletion path
+  # (`buzz-admin deletions`), which needs ListObjectVersions and
+  # DeleteObjectVersion even on never-versioned buckets.
+  versioning: true
+
+  backup:
+    enabled: true
+    schedule: "0 2 * * *"
+    serviceAccountName: buzz-minio-backup
+    # Mirrors into the Terraform-created DR bucket. That bucket is a restore
+    # source only — the relay can never run against GCS.
+    activeDeadlineSeconds: 21600
+
+# ── Preflight ────────────────────────────────────────────────────────────────
+# Proves the object store satisfies the conditional-write axiom BEFORE the
+# relay is deployed. Without it, a non-conforming store presents as a relay
+# that starts, never becomes Ready, and gives no obvious reason why.
+preflight:
+  enabled: true
+  image: python:3.12-slim
+  writers: 32
+  rounds: 3
+  # Job stays for inspection after it completes; buzzctl cleans it up.
+  ttlSecondsAfterFinished: 3600
+
+# ── Network policy ───────────────────────────────────────────────────────────
+# Dataplane V2 enforces these. Default-deny plus named egress: a compromised
+# relay cannot reach arbitrary internet hosts or other namespaces.
+networkPolicy:
+  enabled: true
+  # CIDRs the relay may reach outbound beyond the cluster and its own
+  # dependencies. Agent LLM traffic needs the internet; narrow it to your
+  # provider's ranges or an egress proxy if policy requires.
+  allowedEgressCidrs:
+    - 0.0.0.0/0
+  # Never routable from a pod; blocks metadata-server and RFC1918 pivoting.
+  blockedEgressCidrs:
+    - 169.254.169.254/32
+
+# ── Operators ────────────────────────────────────────────────────────────────
+# 64-char lowercase hex Nostr pubkeys with operator rights on the admin console
+# (RELAY_OPERATOR_PUBKEYS). Empty falls back to ownerPubkey alone.
+operators: []
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Upstream chart values (github.com/block/buzz, deploy/charts/buzz).
+# Everything under this key is passed through untouched.
+# ─────────────────────────────────────────────────────────────────────────────
+buzz:
+  enabled: true
+
+  # Never a tag in production. buzzctl images mirror resolves the digest from
+  # Artifact Registry and writes it into values.generated.yaml.
+  image:
+    repository: ""
+    digest: ""
+    pullPolicy: IfNotPresent
+
+  # Filled from terraform output: wss://<relay hostname>.
+  relayUrl: ""
+
+  # 64-char lowercase hex pubkey of the workspace owner. Set this before the
+  # first deploy — with requireRelayMembership on (the default), nobody can
+  # join a relay that has no owner.
+  ownerPubkey: ""
+
+  replicaCount: 3
+
+  # Declared here even though these match upstream's defaults, because this
+  # chart's own templates need them: the Gateway's HealthCheckPolicy targets
+  # the health port and the admin HTTPRoute targets the app port. A parent
+  # chart cannot read a subchart's defaults, so leaving this out makes those
+  # templates fall back to the numbers hardcoded in _helpers.tpl instead of
+  # tracking whatever is actually configured.
+  #
+  #   3000  app: WebSocket, REST, web bundle
+  #   8080  health: /_liveness, /_readiness  <- what the load balancer probes
+  #   9102  metrics: Prometheus
+  service:
+    port: 3000
+    healthPort: 8080
+    metricsPort: 9102
+
+  secrets:
+    # Rendered by External Secrets. The chart's autogeneration path is not
+    # GitOps-safe and is never used here.
+    existingSecret: buzz-secrets
+
+  relay:
+    # The access model, stated explicitly. Buzz has no OIDC/SAML for humans:
+    # identity is a Nostr keypair, and these three flags are what turn the
+    # relay from open to invite-only.
+    requireAuthToken: true
+    requireRelayMembership: true
+    pubkeyAllowlist: true
+    allowNipOaAuth: true
+
+    maxConnections: 10000
+
+    # Spread WebSocket close frames over 5s on SIGTERM. Without it a rolling
+    # deploy drops a whole pod's sockets at once and the reconnect herd lands
+    # on the database pool together.
+    drainJitterMs: 5000
+
+    resources:
+      requests:
+        cpu: "1"
+        memory: 1Gi
+      limits:
+        cpu: "4"
+        memory: 4Gi
+
+  # Per-pod scratch, not a PVC. Git state is object-store-backed and repo-name
+  # uniqueness lives in Postgres, so nothing durable is on this disk — and a
+  # ReadWriteOnce PVC would pin every replica to one node.
+  persistence:
+    git:
+      enabled: false
+      size: 20Gi
+
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 12
+    targetCPUUtilizationPercentage: 65
+    # Needs a custom-metrics adapter to work. Left off; CPU alone is a sound
+    # signal for the relay's workload.
+    websocketMetricEnabled: false
+
+  # Gateway API, not Ingress. The Gateway itself is created by this chart.
+  ingress:
+    enabled: false
+  httproute:
+    enabled: true
+
+  # Bundled eval services stay off — all three are external.
+  postgresql:
+    enabled: false
+  redis:
+    enabled: false
+
+  s3:
+    bucket: buzz-media
+    region: us-east-1
+    # MinIO's Service DNS resolves one hostname, not <bucket>.<service>, so
+    # path addressing is required. virtual would break every request.
+    addressingStyle: path
+
+  git:
+    maxReposPerPubkey: 100
+    maxConcurrentOps: 20
+
+  migrate:
+    # The relay runs sqlx migrations at startup. The pre-upgrade Job is off
+    # because it cannot carry the Cloud SQL Auth Proxy sidecar and so has no
+    # route to the database.
+    autoMigrate: true
+    preUpgradeJob:
+      enabled: false
+
+  # Replaced by this chart's PodMonitoring.
+  serviceMonitor:
+    enabled: false
+
+  serviceAccount:
+    create: true
+    # Workload Identity annotation is added by buzzctl from terraform output.
+    annotations: {}

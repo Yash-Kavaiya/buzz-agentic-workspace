@@ -1,0 +1,1225 @@
+#!/usr/bin/env bash
+#
+# buzzctl — operate self-hosted Buzz on GKE.
+#
+# One command per thing an operator actually needs to do, in the order they
+# need to do them:
+#
+#   bootstrap  infra  secrets  images  preflight  deploy  verify
+#   onboard  offboard  members  rotate  backup  status  logs  doctor
+#
+# Run `buzzctl help <command>` for detail on any of them.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
+
+readonly UPSTREAM_IMAGE="ghcr.io/block/buzz"
+readonly UPSTREAM_CHART="oci://ghcr.io/block/buzz/charts/buzz"
+
+usage() {
+  cat >&2 <<'USAGE'
+buzzctl — operate self-hosted Buzz on GKE
+
+SETUP (once per project)
+  bootstrap --project ID --repo OWNER/REPO
+                          Enable APIs, create the Terraform state bucket and a
+                          keyless CI identity.
+
+INFRASTRUCTURE
+  infra init ENV          Initialise the Terraform backend.
+  infra plan ENV          Show what would change.
+  infra apply ENV         Create or update the environment.
+  infra output ENV        Print the platform output as JSON.
+  infra destroy ENV       Tear the environment down.
+
+DEPLOY
+  secrets init ENV        Generate and store the relay identity, git HMAC and
+                          MinIO credentials. Safe to re-run; never overwrites.
+  secrets status ENV      Which secrets have a version and which do not.
+  images mirror ENV       Copy the Buzz image into Artifact Registry, resolve
+                          its digest, and pin it for this environment.
+  preflight ENV           Prove the object store honours conditional writes,
+                          and that Postgres and Redis are reachable.
+  deploy ENV              Render values and run helm upgrade --install.
+  verify ENV              End-to-end check of a running deployment.
+
+PEOPLE AND AGENTS
+  onboard user ENV --npub KEY [--role member|admin]
+  onboard agent ENV --name NAME [--role member|admin]
+  offboard ENV --npub KEY
+  members ENV             List the relay roster.
+
+DAY TWO
+  rotate hmac ENV         Rotate the git hook HMAC secret.
+  rotate minio ENV        Rotate the relay's MinIO credentials.
+  backup now ENV          Trigger the object-store mirror immediately.
+  backup verify ENV       Check the DR copy is fresh.
+  backup enable ENV       Provision the GCS HMAC keys the mirror needs.
+  status ENV              Pods, rollout, gateway and certificate state.
+  logs ENV [-f]           Relay logs.
+  doctor ENV              Diagnose a deployment that is not healthy.
+
+UTILITIES
+  keygen [--json]         Mint a Nostr keypair.
+  npub HEX / hex NPUB     Convert between key formats.
+  version                 Show the Buzz release this repo targets.
+
+ENVIRONMENT VARIABLES
+  BUZZCTL_ASSUME_YES=1    Skip interactive confirmations (for pipelines).
+USAGE
+}
+
+# ── bootstrap ────────────────────────────────────────────────────────────────
+cmd_bootstrap() {
+  local project="" repo=""
+  while (( $# )); do
+    case "$1" in
+      --project) project="${2:-}"; shift 2 ;;
+      --repo)    repo="${2:-}"; shift 2 ;;
+      *) die "unknown argument to bootstrap: $1" ;;
+    esac
+  done
+  [[ -n "$project" ]] || die "bootstrap needs --project PROJECT_ID"
+  [[ -n "$repo" ]] || die "bootstrap needs --repo OWNER/REPO (the repository CI runs from)"
+
+  require_cmd terraform gcloud
+
+  step "Bootstrapping project $project"
+  info "this enables APIs, creates the Terraform state bucket, and sets up keyless CI auth"
+
+  terraform -chdir="$TF_BOOTSTRAP_DIR" init -input=false
+  terraform -chdir="$TF_BOOTSTRAP_DIR" apply -input=false \
+    -var "project_id=$project" \
+    -var "github_repository=$repo"
+
+  local bucket
+  bucket="$(terraform -chdir="$TF_BOOTSTRAP_DIR" output -raw state_bucket)"
+
+  step "Wiring the environment backends to $bucket"
+  local env
+  for env in dev staging prod; do
+    # Terraform backends cannot take variables, so the bucket name is written
+    # in rather than interpolated.
+    sed -i.bak "s|bucket = \".*\"|bucket = \"$bucket\"|" "$TF_ENV_DIR/$env/backend.tf"
+    rm -f "$TF_ENV_DIR/$env/backend.tf.bak"
+    ok "$env backend -> $bucket"
+  done
+
+  step "Next"
+  cat >&2 <<NEXT
+  1. Set project_id in terraform/environments/*/terraform.tfvars
+  2. Set ownerPubkey in config/<env>.yaml   (buzzctl keygen)
+  3. buzzctl infra apply dev
+
+  For CI, add these repository secrets:
+NEXT
+  terraform -chdir="$TF_BOOTSTRAP_DIR" output -raw github_actions_auth_snippet >&2
+}
+
+# ── infra ────────────────────────────────────────────────────────────────────
+cmd_infra() {
+  local action="${1:-}"; shift || true
+  local env; env="$(require_env_arg "${1:-}")"; shift || true
+  require_cmd terraform
+
+  case "$action" in
+    init)
+      tf "$env" init -input=false "$@"
+      ;;
+    plan)
+      tf "$env" plan -input=false -var-file=terraform.tfvars "$@"
+      ;;
+    apply)
+      confirm_production "$env" "apply infrastructure changes to"
+      tf "$env" apply -input=false -var-file=terraform.tfvars "$@"
+      # The cache is stale the moment apply changes anything.
+      platform_json "$env" refresh >/dev/null
+      tf "$env" output -raw next_steps >&2
+      ;;
+    output)
+      tf "$env" output -json platform | jq .
+      ;;
+    destroy)
+      confirm_production "$env" "DESTROY"
+      warn "this destroys the cluster, the database and the object store for '$env'"
+      confirm "Continue?" || die "aborted"
+      tf "$env" destroy -input=false -var-file=terraform.tfvars "$@"
+      ;;
+    *)
+      die "infra takes: init, plan, apply, output, destroy"
+      ;;
+  esac
+}
+
+# ── secrets ──────────────────────────────────────────────────────────────────
+# Secrets are generated here, not in Terraform, so their values never enter
+# Terraform state — which lives in a bucket that more people can read than
+# should ever be able to read the relay's identity key.
+cmd_secrets() {
+  local action="${1:-}"; shift || true
+  local env; env="$(require_env_arg "${1:-}")"; shift || true
+  require_cmd gcloud jq python3
+
+  case "$action" in
+    init)   secrets_init "$env" ;;
+    status) secrets_status "$env" ;;
+    *)      die "secrets takes: init, status  (see 'rotate' for rotation)" ;;
+  esac
+}
+
+secrets_init() {
+  local env="$1"
+
+  step "Populating secrets for $env"
+  dim "existing versions are never overwritten; use 'buzzctl rotate' for that"
+
+  # The relay's identity. Rotating this is not a credential refresh — it makes
+  # the relay a different entity, invalidating every event it has ever signed.
+  if secret_has_version "$env" relay-private-key; then
+    ok "relay-private-key already set"
+  else
+    info "generating relay identity"
+    local keypair secret_hex pubkey_hex
+    keypair="$(python3 "$SCRIPT_DIR/lib/nostr_key.py" --generate --format json)"
+    secret_hex="$(jq -re .secret_hex <<<"$keypair")"
+    pubkey_hex="$(jq -re .pubkey_hex <<<"$keypair")"
+    printf '%s' "$secret_hex" | secret_put "$env" relay-private-key
+    ok "relay identity created, pubkey $pubkey_hex"
+    unset secret_hex keypair
+  fi
+
+  # Required whenever replicaCount > 1: the relay signs git hook callbacks with
+  # it, and replicas must agree on the secret to verify each other's.
+  if secret_has_version "$env" git-hook-hmac; then
+    ok "git-hook-hmac already set"
+  else
+    info "generating git hook HMAC secret"
+    python3 -c 'import secrets;print(secrets.token_urlsafe(48),end="")' \
+      | secret_put "$env" git-hook-hmac
+    ok "git-hook-hmac created"
+  fi
+
+  local pair
+  for pair in "minio-root-user:minio_root" "minio-access-key:buzz_relay"; do
+    local suffix="${pair%%:*}" prefix="${pair##*:}"
+    if secret_has_version "$env" "$suffix"; then
+      ok "$suffix already set"
+    else
+      info "generating $suffix"
+      printf '%s_%s' "$prefix" "$(python3 -c 'import secrets;print(secrets.token_hex(6),end="")')" \
+        | secret_put "$env" "$suffix"
+      ok "$suffix created"
+    fi
+  done
+
+  for suffix in minio-root-password minio-secret-key; do
+    if secret_has_version "$env" "$suffix"; then
+      ok "$suffix already set"
+    else
+      info "generating $suffix"
+      python3 -c 'import secrets;print(secrets.token_urlsafe(40),end="")' \
+        | secret_put "$env" "$suffix"
+      ok "$suffix created"
+    fi
+  done
+
+  # Memorystore's CA is not a secret, but the relay cannot dial rediss://
+  # without it, so it is fetched here alongside everything else it needs.
+  if [[ "$(platform_get "$env" '.redis.transit_encryption_enabled')" == "true" ]]; then
+    local state_dir project name_prefix
+    state_dir="$(env_state_dir "$env")"
+    project="$(platform_get "$env" '.project_id')"
+    name_prefix="$(platform_get "$env" '.name_prefix')"
+    info "fetching the Memorystore server CA"
+    if gcloud redis instances describe "${name_prefix}-redis" \
+        --region "$(platform_get "$env" '.region')" --project "$project" \
+        --format='value(serverCaCerts[0].cert)' > "$state_dir/redis-ca.pem" 2>/dev/null \
+        && [[ -s "$state_dir/redis-ca.pem" ]]; then
+      ok "Memorystore CA cached at $state_dir/redis-ca.pem"
+    else
+      rm -f "$state_dir/redis-ca.pem"
+      warn "could not fetch the Memorystore CA. The relay will not complete a
+     rediss:// handshake without it. Either fix access to the instance, or set
+     redis_transit_encryption = false and re-apply — see docs/90-adr/ADR-005."
+    fi
+  fi
+
+  step "Secrets ready"
+  secrets_status "$env"
+}
+
+secrets_status() {
+  local env="$1" suffix
+  local -a required=(relay-private-key git-hook-hmac database-url redis-url
+                     minio-access-key minio-secret-key minio-root-user minio-root-password)
+  local -a optional=(read-database-url klipy-api-key)
+  local missing_count=0
+
+  for suffix in "${required[@]}"; do
+    if secret_has_version "$env" "$suffix"; then
+      ok "$(secret_name "$env" "$suffix")"
+    else
+      warn "$(secret_name "$env" "$suffix") — NO VERSION"
+      missing_count=$((missing_count + 1))
+    fi
+  done
+  for suffix in "${optional[@]}"; do
+    if secret_has_version "$env" "$suffix"; then
+      ok "$(secret_name "$env" "$suffix") (optional)"
+    else
+      dim "  -- $(secret_name "$env" "$suffix") (optional, unset)"
+    fi
+  done
+
+  (( missing_count == 0 )) || die "$missing_count required secret(s) have no version. Run: buzzctl secrets init $env"
+}
+
+# ── images ───────────────────────────────────────────────────────────────────
+cmd_images() {
+  local action="${1:-}"; shift || true
+  local env; env="$(require_env_arg "${1:-}")"; shift || true
+
+  local version="${BUZZ_VERSION:-}"
+  while (( $# )); do
+    case "$1" in
+      --version) version="${2:-}"; shift 2 ;;
+      *) die "unknown argument to images: $1" ;;
+    esac
+  done
+
+  [[ "$action" == "mirror" ]] || die "images takes: mirror"
+  require_cmd gcloud jq
+
+  local registry state_dir
+  registry="$(platform_get "$env" '.registry.repository_url')"
+  state_dir="$(env_state_dir "$env")"
+
+  if [[ -z "$version" ]]; then
+    version="$(grep -E '^appVersion:' "$CHART_DIR/Chart.yaml" | head -1 | tr -d '"' | awk '{print $2}')"
+  fi
+  [[ -n "$version" ]] || die "could not determine the Buzz version to mirror; pass --version"
+
+  local source_ref="${UPSTREAM_IMAGE}:v${version#v}"
+  local target_ref="${registry}/buzz:v${version#v}"
+
+  step "Mirroring $source_ref -> $target_ref"
+  dim "the deploy always runs the digest, never this tag"
+
+  # crane is the right tool (no daemon, no local disk for the layers). docker is
+  # the fallback because more machines already have it.
+  if command -v crane >/dev/null 2>&1; then
+    gcloud auth configure-docker "$(cut -d/ -f1 <<<"$registry")" --quiet >/dev/null 2>&1 || true
+    crane copy "$source_ref" "$target_ref"
+  elif command -v docker >/dev/null 2>&1; then
+    gcloud auth configure-docker "$(cut -d/ -f1 <<<"$registry")" --quiet
+    docker pull "$source_ref"
+    docker tag "$source_ref" "$target_ref"
+    docker push "$target_ref"
+  else
+    die "need either crane or docker to mirror images"
+  fi
+
+  info "resolving the digest from Artifact Registry"
+  local digest
+  digest="$(gcloud artifacts docker images describe "$target_ref" \
+    --format='value(image_summary.digest)' 2>/dev/null || true)"
+  [[ -n "$digest" ]] || die "could not resolve a digest for $target_ref"
+
+  printf '%s' "$digest" > "$state_dir/image-digest"
+  printf '%s' "$version" > "$state_dir/image-version"
+  ok "pinned $version at $digest"
+
+  local attestor
+  attestor="$(platform_get "$env" '.registry.attestor_name' 2>/dev/null || echo "")"
+  if [[ -n "$attestor" && "$attestor" != "null" ]]; then
+    step "Binary Authorization"
+    if [[ -n "${BUZZ_ATTESTOR_KEY_VERSION:-}" ]]; then
+      info "signing the attestation"
+      gcloud beta container binauthz attestations sign-and-create \
+        --project "$(platform_get "$env" '.project_id')" \
+        --artifact-url "${target_ref%%:*}@${digest}" \
+        --attestor "$attestor" \
+        --keyversion "$BUZZ_ATTESTOR_KEY_VERSION" \
+        && ok "attestation created"
+    else
+      warn "BUZZ_ATTESTOR_KEY_VERSION is not set, so no attestation was created.
+     Binary Authorization is enforcing on this cluster, so the relay Pod will be
+     REFUSED at admission until this image is attested. Either set that variable
+     to a Cloud KMS key version, or attest out of band before deploying."
+    fi
+  fi
+}
+
+# ── preflight ────────────────────────────────────────────────────────────────
+# The gate. Everything here answers a question that, unanswered, turns into a
+# confusing outage after deploy rather than a clear failure before it.
+cmd_preflight() {
+  local env; env="$(require_env_arg "${1:-}")"; shift || true
+  require_cmd gcloud kubectl jq
+
+  local namespace release
+  namespace="$(platform_get "$env" '.namespace')"
+  release="$(platform_get "$env" '.release')"
+  ensure_kubecontext "$env" >/dev/null
+
+  local failures=0
+
+  step "1/5  Cluster reachable"
+  if kubectl get --raw /readyz >/dev/null 2>&1; then
+    ok "API server responding"
+  else
+    warn "cannot reach the Kubernetes API"
+    failures=$((failures + 1))
+  fi
+
+  step "2/5  Dataplane V2 NetworkPolicy enforcement"
+  # NetworkPolicy objects are accepted by any cluster; only an enforcing
+  # datapath makes them mean anything. Silent non-enforcement is worse than
+  # having no policy at all, because it looks protected.
+  if kubectl get daemonset -n kube-system anetd >/dev/null 2>&1; then
+    ok "Dataplane V2 present — NetworkPolicy is enforced"
+  else
+    warn "Dataplane V2 not detected; NetworkPolicy objects may not be enforced"
+    failures=$((failures + 1))
+  fi
+
+  step "3/5  Secrets present"
+  if secrets_status "$env" >/dev/null 2>&1; then
+    ok "every required secret has a version"
+  else
+    warn "secrets are incomplete — run: buzzctl secrets init $env"
+    failures=$((failures + 1))
+  fi
+
+  step "4/5  External Secrets rendered the relay Secret"
+  if kubectl -n "$namespace" get secret buzz-secrets >/dev/null 2>&1; then
+    local keys
+    keys="$(kubectl -n "$namespace" get secret buzz-secrets -o json | jq -r '.data | keys | join(", ")')"
+    ok "buzz-secrets present ($keys)"
+  else
+    warn "buzz-secrets does not exist yet.
+     On a first install this is expected — the ExternalSecret is created by the
+     deploy. On an existing install it means External Secrets cannot read
+     Secret Manager; check the ClusterSecretStore and the Workload Identity
+     binding for the ESO service account."
+  fi
+
+  step "5/5  Object-store conditional writes"
+  dim "this is the property Buzz's git hosting depends on; the relay refuses to"
+  dim "become Ready without it, so a failure here is a failure to deploy"
+
+  if kubectl -n "$namespace" get statefulset "${release}-minio" >/dev/null 2>&1; then
+    if run_storage_conformance "$env"; then
+      ok "the object store honours If-Match and If-None-Match under contention"
+    else
+      warn "object-store conformance FAILED — see the report above"
+      failures=$((failures + 1))
+    fi
+  else
+    dim "  -- MinIO is not deployed yet; the conformance probe runs as a Helm"
+    dim "     post-install hook on the first 'buzzctl deploy', once the store is up"
+  fi
+
+  echo >&2
+  if (( failures > 0 )); then
+    die "$failures preflight check(s) failed"
+  fi
+  ok "preflight passed"
+}
+
+run_storage_conformance() {
+  local env="$1"
+  local namespace release job
+  namespace="$(platform_get "$env" '.namespace')"
+  release="$(platform_get "$env" '.release')"
+  job="buzz-preflight-$(date -u +%s)"
+
+  kubectl -n "$namespace" delete job -l buzz.io/job=preflight --ignore-not-found >/dev/null 2>&1 || true
+
+  # Runs the same probe the chart's install hook runs, on demand, against
+  # the live store. Sourced from the chart so there is exactly one copy.
+  kubectl -n "$namespace" create configmap "$job" \
+    --from-file=storage_conformance.py="$CHART_DIR/files/storage_conformance.py" >/dev/null
+
+  # Probe parameters come from the same values the chart uses, so an on-demand
+  # run and the chart's hook exercise identical contention.
+  local probe_settings image bucket region writers rounds
+  probe_settings="$(python3 - "$CHART_DIR/values.yaml" "$CHART_DIR/values-$env.yaml" <<'PYEOF'
+import sys, yaml
+
+merged = {}
+def deep_merge(base, overlay):
+    for key, value in (overlay or {}).items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            deep_merge(base[key], value)
+        else:
+            base[key] = value
+
+for path in sys.argv[1:]:
+    try:
+        with open(path) as handle:
+            deep_merge(merged, yaml.safe_load(handle) or {})
+    except FileNotFoundError:
+        pass
+
+preflight = merged.get("preflight", {})
+minio = merged.get("minio", {})
+print(preflight.get("image", "python:3.12-slim"))
+print(minio.get("bucket", "buzz-media"))
+print(minio.get("region", "us-east-1"))
+print(preflight.get("writers", 32))
+print(preflight.get("rounds", 3))
+PYEOF
+)"
+  { read -r image; read -r bucket; read -r region; read -r writers; read -r rounds; } <<<"$probe_settings"
+
+  local manifest
+  manifest="$(python3 "$SCRIPT_DIR/lib/preflight_job.py" \
+    --name "$job" --namespace "$namespace" --release "$release" \
+    --image "$image" --bucket "$bucket" --region "$region" \
+    --writers "$writers" --rounds "$rounds")"
+
+  printf '%s' "$manifest" | kubectl -n "$namespace" apply -f - >/dev/null
+
+  local result=0
+  if ! kubectl -n "$namespace" wait --for=condition=complete "job/$job" --timeout=600s >/dev/null 2>&1; then
+    result=1
+  fi
+  kubectl -n "$namespace" logs "job/$job" --tail=-1 >&2 || true
+  kubectl -n "$namespace" delete job "$job" --ignore-not-found >/dev/null 2>&1 || true
+  kubectl -n "$namespace" delete configmap "$job" --ignore-not-found >/dev/null 2>&1 || true
+
+  return $result
+}
+
+# ── deploy ───────────────────────────────────────────────────────────────────
+cmd_deploy() {
+  local env; env="$(require_env_arg "${1:-}")"; shift || true
+  local dry_run=0
+  while (( $# )); do
+    case "$1" in
+      --dry-run) dry_run=1; shift ;;
+      *) die "unknown argument to deploy: $1" ;;
+    esac
+  done
+
+  require_cmd helm kubectl gcloud jq python3
+
+  local namespace release state_dir config_file
+  namespace="$(platform_get "$env" '.namespace')"
+  release="$(platform_get "$env" '.release')"
+  state_dir="$(env_state_dir "$env")"
+  config_file="$CONFIG_DIR/$env.yaml"
+
+  [[ -f "$config_file" ]] || die "no identity config at $config_file"
+
+  local owner
+  owner="$(python3 -c "import yaml,sys;print((yaml.safe_load(open('$config_file')) or {}).get('ownerPubkey') or '')")"
+  if [[ -z "$owner" ]]; then
+    die "ownerPubkey is empty in $config_file.
+With relay membership required (the default), a relay with no owner is a relay
+nobody can join. Mint a key with 'buzzctl keygen', keep the private half safe,
+and put the public half in that file."
+  fi
+
+  local digest=""
+  [[ -f "$state_dir/image-digest" ]] && digest="$(cat "$state_dir/image-digest")"
+  if [[ -z "$digest" ]]; then
+    die "no pinned image digest for '$env'. Run: buzzctl images mirror $env
+Deploying by tag is refused: a tag can be moved, a digest cannot, and this
+cluster enforces Binary Authorization against the digest."
+  fi
+
+  ensure_kubecontext "$env" >/dev/null
+
+  step "Rendering values"
+  local redis_ca_arg=()
+  [[ -f "$state_dir/redis-ca.pem" ]] && redis_ca_arg=(--redis-ca "$state_dir/redis-ca.pem")
+
+  python3 "$SCRIPT_DIR/lib/render_values.py" \
+    --platform "$(platform_json "$env" refresh)" \
+    --config "$config_file" \
+    --image-digest "$digest" \
+    --release "$release" \
+    "${redis_ca_arg[@]}" \
+    --output "$state_dir/values.generated.yaml"
+
+  step "Vendoring the upstream chart"
+  "$SCRIPT_DIR/lib/fetch-chart-deps.sh" "$CHART_DIR" \
+    || die "could not fetch the upstream Buzz chart from $UPSTREAM_CHART"
+
+  local -a helm_args=(
+    upgrade --install "$release" "$CHART_DIR"
+    --namespace "$namespace" --create-namespace
+    --values "$CHART_DIR/values.yaml"
+    --values "$CHART_DIR/values-$env.yaml"
+    --values "$state_dir/values.generated.yaml"
+    # Long timeout on purpose: the pre-install conformance hook runs a real
+    # 32-way race, and the relay's own startup probe runs again after that.
+    --timeout 15m
+    --atomic
+  )
+
+  if (( dry_run )); then
+    step "Rendering only (--dry-run)"
+    helm "${helm_args[@]}" --dry-run --debug
+    return 0
+  fi
+
+  confirm_production "$env" "deploy to"
+
+  step "Deploying $release to $namespace"
+  dim "helm --atomic: a failed rollout is rolled back rather than left half-applied"
+  helm "${helm_args[@]}"
+
+  step "Waiting for the relay"
+  dim "readiness does not open until the relay's own object-store conformance"
+  dim "probe passes, so this is slower than a normal rollout"
+  kubectl -n "$namespace" rollout status "deploy/$(relay_workload "$release")" --timeout=10m
+
+  ok "deployed"
+  step "Now run"
+  log "  buzzctl verify $env"
+}
+
+# ── verify ───────────────────────────────────────────────────────────────────
+cmd_verify() {
+  local env; env="$(require_env_arg "${1:-}")"; shift || true
+  require_cmd kubectl jq python3 curl
+
+  local namespace release relay_host relay_url
+  namespace="$(platform_get "$env" '.namespace')"
+  release="$(platform_get "$env" '.release')"
+  relay_host="$(platform_get "$env" '.edge.relay_hostname')"
+  relay_url="$(platform_get "$env" '.edge.relay_url')"
+  ensure_kubecontext "$env" >/dev/null
+
+  local failures=0
+
+  step "1/6  Relay pods"
+  local ready desired
+  ready="$(kubectl -n "$namespace" get deploy "$(relay_workload "$release")" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)"
+  desired="$(kubectl -n "$namespace" get deploy "$(relay_workload "$release")" -o jsonpath='{.spec.replicas}' 2>/dev/null || echo 0)"
+  if [[ "${ready:-0}" -gt 0 && "${ready:-0}" == "${desired:-0}" ]]; then
+    ok "$ready/$desired replicas ready"
+  else
+    warn "${ready:-0}/${desired:-0} replicas ready — run 'buzzctl doctor $env'"
+    failures=$((failures + 1))
+  fi
+
+  step "2/6  Object store"
+  local minio_ready
+  minio_ready="$(kubectl -n "$namespace" get statefulset "${release}-minio" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)"
+  if [[ "${minio_ready:-0}" -gt 0 ]]; then
+    ok "$minio_ready MinIO server(s) ready"
+  else
+    warn "no MinIO servers ready — the relay cannot serve media or git"
+    failures=$((failures + 1))
+  fi
+
+  step "3/6  NIP-11 relay information document"
+  # A NIP-11 response proves the app listener, the config and the database are
+  # all working — much stronger evidence than a TCP connect.
+  local nip11
+  if nip11="$(curl -fsS --max-time 15 -H 'Accept: application/nostr+json' "https://$relay_host/" 2>/dev/null)"; then
+    local nips name
+    name="$(jq -r '.name // "?"' <<<"$nip11" 2>/dev/null || echo '?')"
+    nips="$(jq -r '(.supported_nips // []) | length' <<<"$nip11" 2>/dev/null || echo 0)"
+    if [[ "$nips" -gt 0 ]]; then
+      ok "relay '$name' advertising $nips NIPs"
+    else
+      warn "the endpoint answered but the document has no supported_nips"
+      failures=$((failures + 1))
+    fi
+  else
+    warn "could not fetch https://$relay_host/ — check DNS, the certificate and Cloud Armor"
+    failures=$((failures + 1))
+  fi
+
+  step "4/6  WebSocket handshake and NIP-42 challenge"
+  if python3 "$SCRIPT_DIR/lib/ws_probe.py" "$relay_url"; then
+    ok "the relay upgraded the connection and issued an AUTH challenge"
+  else
+    warn "the WebSocket handshake did not complete as expected.
+     The most common cause is the load-balancer backend timeout: Google's
+     default is 30s, which severs long-lived sockets. This platform sets it to
+     3600s through GCPBackendPolicy — check that the policy is attached."
+    failures=$((failures + 1))
+  fi
+
+  step "5/6  Metrics"
+  local port=19102
+  kubectl -n "$namespace" port-forward "deploy/$(relay_workload "$release")" "$port:9102" >/dev/null 2>&1 &
+  local pf_pid=$!
+  # Give the forward a moment to bind; kubectl offers no readiness signal here.
+  local waited=0
+  while (( waited < 10 )); do
+    curl -fsS --max-time 2 "http://127.0.0.1:$port/metrics" >/dev/null 2>&1 && break
+    waited=$((waited + 1))
+    sleep 1
+  done
+  local metrics
+  if metrics="$(curl -fsS --max-time 5 "http://127.0.0.1:$port/metrics" 2>/dev/null)"; then
+    local families
+    families="$(grep -c '^# TYPE' <<<"$metrics" || true)"
+    ok "$families metric families exposed"
+    if grep -q '^buzz_storage_sweep_ok 1' <<<"$metrics"; then
+      ok "object-storage sweep healthy"
+    elif grep -q '^buzz_storage_sweep_ok 0' <<<"$metrics"; then
+      warn "buzz_storage_sweep_ok is 0 — the relay's credentials are probably
+     missing bucket-level s3:ListBucket. Media still works; usage metrics and
+     community deletion do not."
+    fi
+  else
+    warn "could not scrape /metrics"
+    failures=$((failures + 1))
+  fi
+  kill "$pf_pid" >/dev/null 2>&1 || true
+  wait "$pf_pid" 2>/dev/null || true
+
+  step "6/6  Relay roster"
+  if relay_exec "$env" buzz-admin list-members >/dev/null 2>&1; then
+    local count
+    count="$(relay_exec "$env" buzz-admin list-members 2>/dev/null | grep -c . || true)"
+    ok "membership store reachable ($count line(s))"
+  else
+    warn "buzz-admin could not read the roster — check the Cloud SQL Auth Proxy sidecar"
+    failures=$((failures + 1))
+  fi
+
+  echo >&2
+  if (( failures > 0 )); then
+    die "$failures verification check(s) failed"
+  fi
+  ok "verification passed — $relay_url is serving"
+}
+
+# ── onboarding ───────────────────────────────────────────────────────────────
+# Membership is the access control. There is no IdP to disable an account in:
+# a pubkey is either on the relay roster or it is not.
+cmd_onboard() {
+  local kind="${1:-}"; shift || true
+  local env; env="$(require_env_arg "${1:-}")"; shift || true
+
+  local npub="" name="" role="member"
+  while (( $# )); do
+    case "$1" in
+      --npub)   npub="${2:-}"; shift 2 ;;
+      --pubkey) npub="${2:-}"; shift 2 ;;
+      --name)   name="${2:-}"; shift 2 ;;
+      --role)   role="${2:-}"; shift 2 ;;
+      *) die "unknown argument to onboard: $1" ;;
+    esac
+  done
+
+  case "$role" in
+    member|admin) ;;
+    owner) die "the owner is set through config/$env.yaml (ownerPubkey), not by adding a member" ;;
+    *) die "role must be 'member' or 'admin'" ;;
+  esac
+
+  require_cmd kubectl python3
+  ensure_kubecontext "$env" >/dev/null
+
+  case "$kind" in
+    user)  onboard_user "$env" "$npub" "$role" ;;
+    agent) onboard_agent "$env" "$name" "$role" ;;
+    *) die "onboard takes: user, agent" ;;
+  esac
+}
+
+onboard_user() {
+  local env="$1" npub="$2" role="$3"
+  [[ -n "$npub" ]] || die "onboard user needs --npub npub1... (or a 64-char hex pubkey)
+
+Ask the person for their PUBLIC key. Their Buzz client shows it under their
+profile. Never ask for, accept, or store an nsec — that is their private key."
+
+  local hex
+  hex="$(normalize_pubkey "$npub")" || die "that key could not be decoded"
+
+  step "Adding $hex as $role"
+  relay_exec "$env" buzz-admin add-member --pubkey "$hex" --role "$role"
+
+  ok "added"
+  dim "the relay publishes an updated roster over Redis, so live clients see it immediately"
+  log ""
+  log "  Tell them to connect their Buzz client to: $(platform_get "$env" '.edge.relay_url')"
+}
+
+onboard_agent() {
+  local env="$1" name="$2" role="$3"
+  [[ -n "$name" ]] || die "onboard agent needs --name NAME"
+  [[ "$name" =~ ^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$ ]] \
+    || die "agent name must be lowercase alphanumeric with dashes, 3-40 characters"
+
+  require_cmd gcloud jq
+
+  local project secret_id
+  project="$(platform_get "$env" '.project_id')"
+  secret_id="$(secret_name "$env" "agent-$name")"
+
+  step "Provisioning agent identity '$name'"
+
+  # Unlike a human's key, an agent's key is the platform's to hold: the agent
+  # is a process we run, and it needs the key injected at start. It goes
+  # straight into Secret Manager and is never printed.
+  if gcloud secrets describe "$secret_id" --project "$project" >/dev/null 2>&1; then
+    warn "secret $secret_id already exists; reusing the existing identity"
+  else
+    info "creating $secret_id"
+    gcloud secrets create "$secret_id" --project "$project" \
+      --replication-policy=user-managed \
+      --locations="$(platform_get "$env" '.region')" \
+      --labels="platform=buzz,component=agent" >/dev/null
+  fi
+
+  local pubkey_hex
+  if gcloud secrets versions access latest --secret "$secret_id" --project "$project" >/dev/null 2>&1; then
+    pubkey_hex="$(gcloud secrets versions access latest --secret "$secret_id" --project "$project" | jq -re .pubkey_hex)"
+    dim "  reusing existing keypair"
+  else
+    local keypair
+    keypair="$(python3 "$SCRIPT_DIR/lib/nostr_key.py" --generate --format json)"
+    pubkey_hex="$(jq -re .pubkey_hex <<<"$keypair")"
+    printf '%s' "$keypair" | gcloud secrets versions add "$secret_id" \
+      --project "$project" --data-file=- >/dev/null
+    unset keypair
+    ok "keypair generated and stored"
+  fi
+
+  step "Adding the agent to the relay roster"
+  relay_exec "$env" buzz-admin add-member --pubkey "$pubkey_hex" --role "$role"
+
+  ok "agent '$name' onboarded"
+  log ""
+  log "  pubkey  $pubkey_hex"
+  log "  npub    $(python3 "$SCRIPT_DIR/lib/nostr_key.py" --encode "$pubkey_hex")"
+  log "  secret  $secret_id  (Secret Manager)"
+  log ""
+  log "  The agent process reads its key from BUZZ_PRIVATE_KEY. Give its workload"
+  log "  a service account with secretAccessor on that one secret — not on the"
+  log "  project — and inject it the same way the relay gets its own credentials."
+}
+
+cmd_offboard() {
+  local env; env="$(require_env_arg "${1:-}")"; shift || true
+  local npub="" role=""
+  while (( $# )); do
+    case "$1" in
+      --npub|--pubkey) npub="${2:-}"; shift 2 ;;
+      --role) role="${2:-}"; shift 2 ;;
+      *) die "unknown argument to offboard: $1" ;;
+    esac
+  done
+  [[ -n "$npub" ]] || die "offboard needs --npub npub1... (or a hex pubkey)"
+
+  require_cmd kubectl python3
+  ensure_kubecontext "$env" >/dev/null
+
+  local hex
+  hex="$(normalize_pubkey "$npub")" || die "that key could not be decoded"
+
+  step "Removing $hex from $env"
+  warn "this revokes access. Their existing messages remain — the event log is
+     append-only and signed, and removing history would break the audit chain."
+  confirm "Remove this key?" || die "aborted"
+
+  if [[ -n "$role" ]]; then
+    relay_exec "$env" buzz-admin remove-member --pubkey "$hex" --role "$role"
+  else
+    relay_exec "$env" buzz-admin remove-member --pubkey "$hex"
+  fi
+
+  ok "removed from the roster"
+  dim "live connections are re-authorised on their next event, not instantly killed"
+}
+
+cmd_members() {
+  local env; env="$(require_env_arg "${1:-}")"; shift || true
+  require_cmd kubectl
+  ensure_kubecontext "$env" >/dev/null
+  relay_exec "$env" buzz-admin list-members
+}
+
+# ── rotation ─────────────────────────────────────────────────────────────────
+cmd_rotate() {
+  local what="${1:-}"; shift || true
+  local env; env="$(require_env_arg "${1:-}")"; shift || true
+  require_cmd gcloud kubectl python3
+
+  case "$what" in
+    hmac)  rotate_hmac "$env" ;;
+    minio) rotate_minio "$env" ;;
+    relay-key)
+      die "the relay private key is an IDENTITY, not a credential.
+
+Rotating it makes the relay a different entity: every event it has signed
+becomes unverifiable against the new key, clients see a relay they have never
+seen before, and NIP-42 sessions all break. If the key is genuinely compromised,
+that is a migration with a communications plan, not a rotation — see
+docs/30-runbooks.md."
+      ;;
+    *) die "rotate takes: hmac, minio" ;;
+  esac
+}
+
+rotate_hmac() {
+  local env="$1"
+  step "Rotating the git hook HMAC secret for $env"
+  dim "replicas verify each other's git hook callbacks with this; they must all"
+  dim "pick up the new value, so a rollout follows the write"
+
+  confirm_production "$env" "rotate the git hook secret in"
+
+  python3 -c 'import secrets;print(secrets.token_urlsafe(48),end="")' \
+    | secret_put "$env" git-hook-hmac
+  ok "new version written to Secret Manager"
+
+  restart_relay "$env"
+  ok "hmac rotated"
+}
+
+rotate_minio() {
+  local env="$1"
+  local namespace release
+  namespace="$(platform_get "$env" '.namespace')"
+  release="$(platform_get "$env" '.release')"
+  ensure_kubecontext "$env" >/dev/null
+
+  step "Rotating the relay's MinIO credentials for $env"
+  warn "there is a window between the new credentials being written and the
+     relay picking them up. Media uploads may fail during it."
+  confirm_production "$env" "rotate object-store credentials in"
+  confirm "Continue?" || die "aborted"
+
+  local new_access new_secret
+  new_access="buzz_relay_$(python3 -c 'import secrets;print(secrets.token_hex(6),end="")')"
+  new_secret="$(python3 -c 'import secrets;print(secrets.token_urlsafe(40),end="")')"
+
+  printf '%s' "$new_access" | secret_put "$env" minio-access-key
+  printf '%s' "$new_secret" | secret_put "$env" minio-secret-key
+  ok "new credentials written to Secret Manager"
+
+  info "forcing External Secrets to re-sync"
+  kubectl -n "$namespace" annotate externalsecret buzz-secrets \
+    "force-sync=$(timestamp)" --overwrite >/dev/null
+
+  info "re-running the MinIO init job to create the new user and policy"
+  kubectl -n "$namespace" delete job "${release}-minio-init" --ignore-not-found >/dev/null
+  helm upgrade "$release" "$CHART_DIR" --reuse-values --namespace "$namespace" --timeout 10m
+
+  restart_relay "$env"
+  ok "minio credentials rotated"
+  dim "the previous MinIO user still exists; remove it once the rollout is confirmed:"
+  dim "  mc admin user remove <alias> <old-access-key>"
+}
+
+restart_relay() {
+  local env="$1" namespace release
+  namespace="$(platform_get "$env" '.namespace')"
+  release="$(platform_get "$env" '.release')"
+  info "rolling the relay"
+  kubectl -n "$namespace" rollout restart "deploy/$(relay_workload "$release")" >/dev/null
+  kubectl -n "$namespace" rollout status "deploy/$(relay_workload "$release")" --timeout=10m
+}
+
+# ── backup ───────────────────────────────────────────────────────────────────
+cmd_backup() {
+  local action="${1:-}"; shift || true
+  local env; env="$(require_env_arg "${1:-}")"; shift || true
+  require_cmd kubectl gcloud
+  ensure_kubecontext "$env" >/dev/null
+
+  case "$action" in
+    now)    backup_now "$env" ;;
+    verify) backup_verify "$env" ;;
+    enable) backup_enable "$env" ;;
+    *) die "backup takes: now, verify, enable" ;;
+  esac
+}
+
+backup_now() {
+  local env="$1" namespace release job
+  namespace="$(platform_get "$env" '.namespace')"
+  release="$(platform_get "$env" '.release')"
+  job="minio-backup-manual-$(date -u +%s)"
+
+  step "Triggering an object-store mirror"
+  kubectl -n "$namespace" create job "$job" --from="cronjob/${release}-minio-backup"
+  info "following the job; ctrl-c is safe, the job continues"
+  kubectl -n "$namespace" wait --for=condition=complete "job/$job" --timeout=6h &
+  kubectl -n "$namespace" logs -f "job/$job" 2>/dev/null || true
+  wait || true
+  ok "mirror finished"
+}
+
+backup_verify() {
+  local env="$1" bucket project age_hours
+  bucket="$(platform_get "$env" '.backup.dr_bucket')"
+  project="$(platform_get "$env" '.project_id')"
+
+  step "Checking the DR copy in gs://$bucket"
+
+  local marker
+  if ! marker="$(gcloud storage cat "gs://$bucket/_buzz/last-backup" --project "$project" 2>/dev/null)"; then
+    die "no backup marker found in gs://$bucket.
+Either no mirror has run yet, or it is failing. Check:
+  kubectl -n $(platform_get "$env" '.namespace') get cronjob,job -l buzz.io/job=minio-backup"
+  fi
+
+  ok "last mirror completed at $marker"
+
+  local marker_epoch now_epoch
+  marker_epoch="$(date -u -d "$marker" +%s 2>/dev/null || echo 0)"
+  now_epoch="$(date -u +%s)"
+  if (( marker_epoch > 0 )); then
+    age_hours=$(( (now_epoch - marker_epoch) / 3600 ))
+    if (( age_hours > 48 )); then
+      warn "that is ${age_hours}h old. The mirror runs daily; something is wrong."
+    else
+      ok "age ${age_hours}h"
+    fi
+  fi
+
+  local count size
+  count="$(gcloud storage ls --recursive "gs://$bucket/**" --project "$project" 2>/dev/null | wc -l | tr -d ' ')"
+  size="$(gcloud storage du --summarize "gs://$bucket" --project "$project" 2>/dev/null | awk '{print $1}')"
+  ok "$count object(s), ${size:-unknown} bytes"
+
+  echo >&2
+  warn "A backup is not a restore. This checks the copy EXISTS; it does not
+     prove it can be restored. Run the restore drill in docs/40-backup-dr.md
+     against a scratch environment on a schedule you actually keep."
+  echo >&2
+  dim "Restores go back into MinIO, never into GCS as a live backend: Buzz's git"
+  dim "manifest CAS needs S3 ETag conditional writes, which GCS does not offer."
+}
+
+backup_enable() {
+  local env="$1" project namespace release sa
+  project="$(platform_get "$env" '.project_id')"
+  namespace="$(platform_get "$env" '.namespace')"
+  release="$(platform_get "$env" '.release')"
+  sa="$(platform_get "$env" '.identity.minio_backup_service_account')"
+
+  step "Provisioning GCS interoperability credentials for the mirror"
+  dim "mc speaks S3, so writing to GCS needs an HMAC key rather than a token"
+
+  local existing
+  existing="$(gcloud storage hmac list --project "$project" \
+    --filter="serviceAccountEmail:$sa AND state:ACTIVE" \
+    --format='value(accessId)' 2>/dev/null | head -1)"
+
+  if [[ -n "$existing" ]]; then
+    warn "an active HMAC key already exists for $sa (accessId $existing).
+     Its secret cannot be retrieved after creation. Delete it and re-run to
+     mint a fresh pair:  gcloud storage hmac delete $existing"
+    return 0
+  fi
+
+  local created access_id secret
+  created="$(gcloud storage hmac create "$sa" --project "$project" --format=json)"
+  access_id="$(jq -re '.metadata.accessId' <<<"$created")"
+  secret="$(jq -re '.secret' <<<"$created")"
+
+  kubectl -n "$namespace" create secret generic "${release}-minio-gcs-hmac" \
+    --from-literal=access_key="$access_id" \
+    --from-literal=secret_key="$secret" \
+    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+  unset secret created
+  ok "HMAC key $access_id stored as ${release}-minio-gcs-hmac"
+  dim "the mirror CronJob picks it up on its next run"
+}
+
+# ── status / logs / doctor ───────────────────────────────────────────────────
+cmd_status() {
+  local env; env="$(require_env_arg "${1:-}")"; shift || true
+  require_cmd kubectl gcloud
+  local namespace release project
+  namespace="$(platform_get "$env" '.namespace')"
+  release="$(platform_get "$env" '.release')"
+  project="$(platform_get "$env" '.project_id')"
+  ensure_kubecontext "$env" >/dev/null
+
+  step "Workloads"
+  kubectl -n "$namespace" get deploy,statefulset,pods -o wide 2>&1 | sed 's/^/  /' >&2
+
+  step "Gateway"
+  kubectl -n "$namespace" get gateway,httproute 2>&1 | sed 's/^/  /' >&2
+
+  step "Certificates"
+  gcloud certificate-manager certificates list --project "$project" \
+    --format='table(name.basename(), managed.state, managed.domains.list())' 2>&1 | sed 's/^/  /' >&2
+
+  step "Secrets"
+  kubectl -n "$namespace" get externalsecret 2>&1 | sed 's/^/  /' >&2
+
+  step "Backups"
+  kubectl -n "$namespace" get cronjob 2>&1 | sed 's/^/  /' >&2
+
+  step "Endpoint"
+  log "  $(platform_get "$env" '.edge.relay_url')"
+  log "  https://$(platform_get "$env" '.edge.admin_hostname')  (admin)"
+  log "  image digest: $(cat "$(env_state_dir "$env")/image-digest" 2>/dev/null || echo 'not pinned')"
+}
+
+cmd_logs() {
+  local env; env="$(require_env_arg "${1:-}")"; shift || true
+  require_cmd kubectl
+  local namespace release
+  namespace="$(platform_get "$env" '.namespace')"
+  release="$(platform_get "$env" '.release')"
+  ensure_kubecontext "$env" >/dev/null
+  kubectl -n "$namespace" logs "deploy/$(relay_workload "$release")" -c relay --tail=200 "$@"
+}
+
+# Diagnoses the failure modes this platform actually produces, in the order
+# they are most likely, with the reason each one happens.
+cmd_doctor() {
+  local env; env="$(require_env_arg "${1:-}")"; shift || true
+  require_cmd kubectl jq
+  local namespace release
+  namespace="$(platform_get "$env" '.namespace')"
+  release="$(platform_get "$env" '.release')"
+  ensure_kubecontext "$env" >/dev/null
+
+  step "Pod state"
+  local not_ready
+  not_ready="$(kubectl -n "$namespace" get pods -o json \
+    | jq -r '.items[] | select(any(.status.containerStatuses[]?; .ready != true)) | .metadata.name')"
+
+  if [[ -z "$not_ready" ]]; then
+    ok "every pod is ready"
+  else
+    warn "not ready: $(tr '\n' ' ' <<<"$not_ready")"
+  fi
+
+  step "Waiting containers"
+  kubectl -n "$namespace" get pods -o json | jq -r '
+    .items[]
+    | .metadata.name as $pod
+    | (.status.containerStatuses // [])[]
+    | select(.state.waiting != null)
+    | "  \($pod)/\(.name): \(.state.waiting.reason) — \(.state.waiting.message // "")"' >&2 || true
+
+  step "Common causes"
+
+  # 1. The one people meet first and understand last.
+  if kubectl -n "$namespace" logs "deploy/$(relay_workload "$release")" -c relay --tail=500 2>/dev/null \
+      | grep -qi "conformance"; then
+    warn "the relay logged an object-store conformance probe result.
+
+     Buzz serialises concurrent git pushes with an S3 conditional write. The
+     relay checks that the store honours it at startup and treats failure as
+     FATAL, so readiness never opens. Reproduce it in isolation:
+
+       buzzctl preflight $env
+
+     If the store is Google Cloud Storage, it will never pass: the GCS
+     S3-compatible API supports ETag preconditions on reads only. See
+     docs/90-adr/ADR-001-object-storage.md."
+  fi
+
+  # 2. ImagePullBackOff under Binary Authorization looks like a registry
+  #    problem and is not.
+  if kubectl -n "$namespace" get events --field-selector reason=FailedCreate 2>/dev/null \
+      | grep -qi "binary authorization\|denied by attestor"; then
+    warn "Binary Authorization is refusing the image.
+
+     The digest has no attestation from the configured attestor. Either attest
+     it (buzzctl images mirror with BUZZ_ATTESTOR_KEY_VERSION set) or, for a
+     non-production environment, set enable_binary_authorization = false."
+  fi
+
+  # 3. The relay sees a database that is not there.
+  if kubectl -n "$namespace" logs "deploy/$(relay_workload "$release")" -c cloud-sql-proxy --tail=100 2>/dev/null \
+      | grep -qi "error\|refused\|denied"; then
+    warn "the Cloud SQL Auth Proxy sidecar is reporting errors.
+
+     Check the Workload Identity binding: the relay's KSA must be bound to the
+     relay GSA, and that GSA needs roles/cloudsql.client. A mismatch shows up
+     as a permission error from the proxy, not from Postgres."
+    kubectl -n "$namespace" logs "deploy/$(relay_workload "$release")" -c cloud-sql-proxy --tail=20 2>&1 \
+      | sed 's/^/     /' >&2 || true
+  fi
+
+  # 4. rediss:// against a private CA.
+  if kubectl -n "$namespace" logs "deploy/$(relay_workload "$release")" -c relay --tail=500 2>/dev/null \
+      | grep -qiE "certificate|tls|rediss"; then
+    warn "there are TLS-related messages in the relay log.
+
+     Memorystore terminates TLS with a Google-managed private CA that is in no
+     public trust store. The chart mounts it and sets SSL_CERT_FILE; confirm the
+     ConfigMap exists and is populated:
+
+       kubectl -n $namespace get configmap ${release}-redis-ca -o yaml
+
+     If the CA cannot be made to work, the documented fallback is AUTH-only on
+     the private VPC (redis_transit_encryption = false). See ADR-005."
+  fi
+
+  step "External Secrets"
+  kubectl -n "$namespace" get externalsecret -o json 2>/dev/null | jq -r '
+    .items[]
+    | "  \(.metadata.name): \((.status.conditions // [])[-1].reason // "Unknown") — \((.status.conditions // [])[-1].message // "")"' >&2 || true
+
+  step "Recent warnings"
+  kubectl -n "$namespace" get events --sort-by=.lastTimestamp 2>/dev/null \
+    | grep -i warning | tail -15 | sed 's/^/  /' >&2 || dim "  none"
+}
+
+# ── utilities ────────────────────────────────────────────────────────────────
+cmd_keygen() {
+  require_cmd python3
+  step "New Nostr keypair"
+  python3 "$SCRIPT_DIR/lib/nostr_key.py" --generate "$@"
+  echo >&2
+  warn "The secret half is the identity. Anything that holds it IS this
+     account. Put it in a password manager or a hardware token; never in git,
+     a ticket, a chat message, or an environment file on a shared machine."
+}
+
+cmd_version() {
+  local version
+  version="$(grep -E '^appVersion:' "$CHART_DIR/Chart.yaml" | head -1 | tr -d '"' | awk '{print $2}')"
+  log "buzz-gke chart : $(grep -E '^version:' "$CHART_DIR/Chart.yaml" | head -1 | awk '{print $2}')"
+  log "targets Buzz   : v$version"
+  log "upstream chart : $UPSTREAM_CHART"
+  log "upstream image : $UPSTREAM_IMAGE"
+}
+
+# ── dispatch ─────────────────────────────────────────────────────────────────
+main() {
+  local command="${1:-help}"; shift || true
+
+  case "$command" in
+    bootstrap)  cmd_bootstrap "$@" ;;
+    infra)      cmd_infra "$@" ;;
+    secrets)    cmd_secrets "$@" ;;
+    images)     cmd_images "$@" ;;
+    preflight)  cmd_preflight "$@" ;;
+    deploy)     cmd_deploy "$@" ;;
+    verify)     cmd_verify "$@" ;;
+    onboard)    cmd_onboard "$@" ;;
+    offboard)   cmd_offboard "$@" ;;
+    members)    cmd_members "$@" ;;
+    rotate)     cmd_rotate "$@" ;;
+    backup)     cmd_backup "$@" ;;
+    status)     cmd_status "$@" ;;
+    logs)       cmd_logs "$@" ;;
+    doctor)     cmd_doctor "$@" ;;
+    keygen)     cmd_keygen "$@" ;;
+    npub)       require_cmd python3; python3 "$SCRIPT_DIR/lib/nostr_key.py" --encode "${1:?hex pubkey required}" ;;
+    hex)        require_cmd python3; python3 "$SCRIPT_DIR/lib/nostr_key.py" --decode "${1:?npub required}" ;;
+    version|--version) cmd_version ;;
+    help|--help|-h) usage ;;
+    *) usage; die "unknown command: $command" ;;
+  esac
+}
+
+main "$@"

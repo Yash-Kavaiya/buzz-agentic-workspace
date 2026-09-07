@@ -1,0 +1,65 @@
+# Dev — single-node everything, fastest feedback loop.
+#
+# Deliberately still runs the preflight and still requires membership: a dev
+# environment that skips the gates does not tell you whether prod will work.
+
+buzz:
+  replicaCount: 1
+
+  relay:
+    # Single pod: the huddle audio path is only safe without an SFU when there
+    # is exactly one relay, so this is the one place it can be enabled.
+    huddleAudioAvailable: true
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+
+  autoscaling:
+    enabled: false
+
+  podDisruptionBudget:
+    enabled: false
+
+minio:
+  # Single node: no erasure coding at all. Acceptable only because dev data is
+  # disposable. Conditional-write semantics are identical, so the preflight
+  # still exercises the property that matters.
+  replicas: 1
+  persistence:
+    size: 50Gi
+    storageClass: standard-rwo
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+  nodeSelector: {}
+  tolerations:
+    - key: buzz.io/minio
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  backup:
+    enabled: false
+
+preflight:
+  # Lower contention keeps dev installs quick; the race is still a race.
+  writers: 16
+  rounds: 1
+
+gateway:
+  admin:
+    enabled: true
+  iap:
+    # Dev has no IAP OAuth client. The admin console is still protected by
+    # NIP-98 operator-pubkey auth in the relay itself.
+    enabled: false
+
+monitoring:
+  enabled: true

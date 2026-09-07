@@ -1,0 +1,20 @@
+extends: default
+
+rules:
+  line-length:
+    max: 120
+    allow-non-breakable-words: true
+  comments:
+    min-spaces-from-content: 1
+  truthy:
+    check-keys: false
+  indentation:
+    spaces: 2
+    indent-sequences: consistent
+  document-start: disable
+  braces:
+    max-spaces-inside: 1
+
+ignore: |
+  helm/buzz-gke/templates/
+  helm/buzz-gke/charts/

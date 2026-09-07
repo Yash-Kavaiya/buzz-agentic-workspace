@@ -1,0 +1,57 @@
+{{- if .Values.minio.enabled }}
+# Client-facing Service. The relay's BUZZ_S3_ENDPOINT points here.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "buzz-gke.minio.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buzz-gke.minio.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "buzz-gke.minio.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: api
+      port: 9000
+      targetPort: api
+    - name: console
+      port: 9001
+      targetPort: console
+---
+# Headless Service — gives every server a stable per-ordinal DNS name, which is
+# how the distributed set addresses its peers.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "buzz-gke.minio.fullname" . }}-headless
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buzz-gke.minio.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  # Peers must resolve each other before any of them is Ready, otherwise the
+  # set can never form and every pod waits on every other pod.
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "buzz-gke.minio.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: api
+      port: 9000
+      targetPort: api
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "buzz-gke.minio.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buzz-gke.minio.labels" . | nindent 4 }}
+spec:
+  # With 4 servers and EC:2, write availability needs a quorum. Allowing one
+  # voluntary disruption at a time keeps node drains safe.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "buzz-gke.minio.selectorLabels" . | nindent 6 }}
+{{- end }}

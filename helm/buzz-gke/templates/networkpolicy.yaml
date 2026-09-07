@@ -1,0 +1,142 @@
+{{- include "buzz-gke.validate" . -}}
+{{- if .Values.networkPolicy.enabled }}
+# Default-deny for the namespace. Everything below is an explicit exception.
+#
+# Enforced by Dataplane V2 (eBPF), which is enabled on the cluster in Terraform.
+# Without that datapath these objects are accepted by the API server and
+# silently do nothing — `buzzctl doctor` checks for exactly that.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "buzz-gke.fullname" . }}-default-deny
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buzz-gke.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "buzz-gke.fullname" . }}-relay
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buzz-gke.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: buzz
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Load balancer data plane and health checks arrive from Google's fixed
+    # ranges, not from inside the cluster.
+    - from:
+        - ipBlock:
+            cidr: 130.211.0.0/22
+        - ipBlock:
+            cidr: 35.191.0.0/16
+      ports:
+        - protocol: TCP
+          port: 3000
+        - protocol: TCP
+          port: 8080
+    # GMP collectors scrape metrics from within the cluster.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: gmp-system
+      ports:
+        - protocol: TCP
+          port: 9102
+  egress:
+    # DNS.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # MinIO — media and the git object store.
+    {{- if .Values.minio.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "buzz-gke.minio.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 9000
+    {{- end }}
+    # Everything else the relay legitimately reaches leaves the cluster:
+    # Cloud SQL and Memorystore over private IPs, Google APIs for the Auth
+    # Proxy, and whatever LLM endpoints agents call. Narrow
+    # networkPolicy.allowedEgressCidrs to tighten this.
+    - to:
+        {{- range .Values.networkPolicy.allowedEgressCidrs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+            except:
+              {{- range $.Values.networkPolicy.blockedEgressCidrs }}
+              - {{ . | quote }}
+              {{- end }}
+        {{- end }}
+{{- if .Values.minio.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "buzz-gke.minio.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buzz-gke.minio.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "buzz-gke.minio.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # The relay, the bucket-init job, the preflight job, and the backup job.
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 9000
+        - protocol: TCP
+          port: 9001
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: gmp-system
+      ports:
+        - protocol: TCP
+          port: 9000
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Peer-to-peer within the erasure set.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "buzz-gke.minio.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 9000
+{{- end }}
+{{- end }}

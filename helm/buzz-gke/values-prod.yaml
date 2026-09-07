@@ -1,0 +1,90 @@
+# Production.
+#
+# Two things here are worth arguing about before you deploy, because both are
+# security posture rather than sizing:
+#
+#   buzz.relay.pubkeyAllowlist  — true means a pubkey must be on the roster
+#                                 before it can connect at all. Turning it off
+#                                 makes the relay reachable by any key that
+#                                 gets past Cloud Armor.
+#   operators                   — every pubkey listed gets moderation rights on
+#                                 the admin console. Keep it short and reviewed.
+
+buzz:
+  replicaCount: 3
+
+  relay:
+    requireAuthToken: true
+    requireRelayMembership: true
+    pubkeyAllowlist: true
+    maxConnections: 20000
+    maxConcurrentHandlers: 2048
+    drainJitterMs: 5000
+
+    resources:
+      requests:
+        cpu: "2"
+        memory: 4Gi
+      limits:
+        cpu: "6"
+        memory: 8Gi
+
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: buzz
+
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 15
+    targetCPUUtilizationPercentage: 60
+
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+
+  git:
+    maxReposPerPubkey: 200
+    maxConcurrentOps: 40
+
+minio:
+  replicas: 4
+  persistence:
+    size: 1000Gi
+    storageClass: premium-rwo
+  resources:
+    requests:
+      cpu: "2"
+      memory: 8Gi
+    limits:
+      cpu: "4"
+      memory: 16Gi
+  backup:
+    enabled: true
+    schedule: "0 2 * * *"
+
+preflight:
+  writers: 32
+  rounds: 3
+
+gateway:
+  iap:
+    enabled: true
+  backendTimeoutSeconds: 3600
+
+networkPolicy:
+  enabled: true
+  # Narrow this to your LLM provider and Google API ranges once the agent
+  # workloads in use are known. Left open by default because an over-tight
+  # egress policy fails as "agents mysteriously stop responding".
+  allowedEgressCidrs:
+    - 0.0.0.0/0
+  blockedEgressCidrs:
+    - 169.254.169.254/32
+
+monitoring:
+  enabled: true

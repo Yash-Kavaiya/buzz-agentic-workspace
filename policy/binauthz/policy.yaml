@@ -1,0 +1,30 @@
+# Reference copy of the Binary Authorization policy.
+#
+# The enforced policy is created by terraform/modules/artifact_registry; this
+# file exists so the rules are reviewable in a diff rather than only in a plan.
+# Editing it changes nothing on its own.
+#
+# The shape: everything must carry an attestation from our mirror attestor,
+# except the images GKE injects into its own system namespaces, which are
+# Google's to sign and not ours to attest.
+
+globalPolicyEvaluationMode: ENABLE
+
+admissionWhitelistPatterns:
+  - namePattern: gcr.io/gke-release/*
+  - namePattern: gke.gcr.io/*
+  - namePattern: gcr.io/gkeconnect/*
+  - namePattern: gcr.io/gkebackup/*
+  - namePattern: gcr.io/cloud-sql-connectors/*
+  - namePattern: gcr.io/google-containers/*
+  - namePattern: gcr.io/projectcalico-org/*
+  - namePattern: gcr.io/distroless/*
+
+defaultAdmissionRule:
+  evaluationMode: REQUIRE_ATTESTATION
+  # BLOCK_AND_AUDIT_LOG, not DRYRUN: an unattested image is refused, and the
+  # refusal is recorded. A dry-run policy tells you afterwards that something
+  # you did not intend to run has been running.
+  enforcementMode: ENFORCED_BLOCK_AND_AUDIT_LOG
+  requireAttestationsBy:
+    - projects/PROJECT_ID/attestors/buzz-ENV-mirror-attestor

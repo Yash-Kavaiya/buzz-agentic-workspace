@@ -1,0 +1,44 @@
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfplan.json
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Never commit real variable values that carry identifiers or secrets
+terraform/environments/*/terraform.auto.tfvars
+terraform/environments/*/*.local.tfvars
+
+# Helm
+helm/**/charts/
+helm/**/Chart.lock
+helm/**/*.tgz
+rendered/
+
+# Local operator state
+.buzzctl/
+*.kubeconfig
+/tmp-*
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Editors / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
