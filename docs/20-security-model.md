@@ -61,7 +61,7 @@ see messages on an established socket — that is the relay's job (layer 3).
 ### 2. Transport and platform
 
 - No public node IPs; egress via Cloud NAT.
-- No public control-plane endpoint outside dev.
+- No public control-plane endpoint, in any environment, by default.
 - Cloud SQL and Memorystore on private IPs over Private Service Access; Cloud
   SQL has `ipv4_enabled = false` and the lint asserts it.
 - TLS from Google-managed certificates, DNS-authorized so renewal does not
@@ -76,6 +76,13 @@ see messages on an established socket — that is the relay's job (layer 3).
   `169.254.169.254/32` excluded from egress.
 - Shielded nodes, secure boot, integrity monitoring; CMEK application-layer
   encryption of Secrets in etcd.
+- **A public control-plane endpoint with no authorized networks is refused.**
+  The two settings are individually reasonable and catastrophic together — the
+  Kubernetes API server on the open internet — so the `gke` module rejects the
+  combination at plan time, and `policy/conftest/terraform.rego` and
+  `tests/lint_terraform.py` assert it independently. A Trivy scan cannot see
+  through the module's dynamic block, which is why the check is duplicated
+  where the real values are visible.
 
 ### 3. Relay authorisation
 
@@ -129,6 +136,10 @@ properties worth stating here:
   (`terraform/modules/observability`), retained per `audit_retention_days`.
 - VPC flow logs at 50% sampling.
 - Load balancer logging at 50% sampling.
+- Postgres logs connections, disconnections, lock waits, temporary files and
+  statements slower than 1s. `log_parameter_max_length = 0` keeps bind
+  parameter *values* out of those logs, so slow-query text is available for
+  incident triage without message content following it into Cloud Logging.
 
 **Offboarding does not remove history**, and should not: the event log is a
 signed chain, and deleting entries would break the audit property that makes it

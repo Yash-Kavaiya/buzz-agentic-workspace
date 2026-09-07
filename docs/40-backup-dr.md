@@ -34,6 +34,9 @@ the live store is not deleted from the DR copy. Combined with bucket versioning
 and optional locked retention, an attacker holding the mirror job's credentials
 cannot erase what it has already written.
 
+The DR bucket is encrypted with a customer-managed key
+(`kms.storage_key_id`), like the primary stores.
+
 `dr_bucket_retention_locked = true` makes retention irreversible. Nobody,
 including a project owner, can shorten or remove it. That is the point, and it
 is why the default is `false` — turn it on when you are certain of the period.

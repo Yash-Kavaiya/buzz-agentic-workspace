@@ -53,6 +53,11 @@ resource "google_project_service" "required" {
 # ── Terraform remote state ───────────────────────────────────────────────────
 # Versioning is the recovery path for a corrupted or truncated state write, and
 # uniform bucket-level access keeps ACLs out of the picture entirely.
+# No CMEK here, unavoidably: this bucket is created by
+# the bootstrap stack, which runs before any environment exists and therefore
+# before the KMS key ring does. Google-managed encryption applies. The buckets
+# that hold actual platform data — the object-storage DR bucket — do use CMEK.
+# trivy:ignore:AVD-GCP-0066
 resource "google_storage_bucket" "tfstate" {
   name     = local.state_bucket
   project  = var.project_id

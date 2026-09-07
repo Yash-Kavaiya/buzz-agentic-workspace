@@ -192,6 +192,10 @@ module "backup" {
 
   minio_backup_service_account = module.iam.minio_backup_service_account
 
+  # The DR bucket holds every message attachment and git object the platform
+  # has. It gets a customer-managed key like the primary stores do.
+  kms_key_id = module.kms.storage_key_id
+
   labels = local.labels
 }
 

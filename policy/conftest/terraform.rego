@@ -30,6 +30,18 @@ deny contains msg if {
 	msg := sprintf("%s: nodes must be private. Public node IPs put every workload directly on the internet.", [r.address])
 }
 
+# The combination that matters, and that a static scan of the module cannot
+# see through a dynamic block: a public control-plane endpoint with no
+# authorized networks puts the Kubernetes API server on the open internet.
+# The module refuses this at plan time; this asserts it again against the plan.
+deny contains msg if {
+	some r in resources("google_container_cluster")
+	cfg := after(r).private_cluster_config[0]
+	cfg.enable_private_endpoint == false
+	count(object.get(after(r), ["master_authorized_networks_config", 0, "cidr_blocks"], [])) == 0
+	msg := sprintf("%s: the control plane has a PUBLIC endpoint and no authorized networks. That exposes the Kubernetes API server to the internet.", [r.address])
+}
+
 deny contains msg if {
 	some r in resources("google_container_cluster")
 	count(after(r).workload_identity_config) == 0

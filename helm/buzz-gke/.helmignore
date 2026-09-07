@@ -1,6 +1,16 @@
+# Files excluded when the chart is packaged.
+#
+# Do NOT add *.tgz here. Helm applies .helmignore when it LOADS the chart
+# directory, not only when packaging it, so ignoring *.tgz hides
+# charts/buzz-0.1.8.tgz — the vendored upstream dependency — and every
+# `helm template` then fails with "found in Chart.yaml, but missing in charts/
+# directory: buzz" while the file is plainly on disk. That cost a full CI cycle
+# to find; the entry is not worth re-adding.
+#
+# For the same reason, never ignore files/ — the object-storage conformance
+# probe is read from there with .Files.Get.
 .DS_Store
 .git/
 .gitignore
-*.tgz
 tests/
 rendered/

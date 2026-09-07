@@ -14,6 +14,7 @@ locals {
     cloudsql = "Cloud SQL data and backup encryption"
     secrets  = "Secret Manager payload encryption"
     artifact = "Artifact Registry image layer encryption"
+    storage  = "Cloud Storage encryption for the object-storage DR bucket"
   }
 }
 
@@ -60,6 +61,7 @@ locals {
     cloudsql = "serviceAccount:service-${local.project_number}@gcp-sa-cloud-sql.iam.gserviceaccount.com"
     secrets  = "serviceAccount:service-${local.project_number}@gcp-sa-secretmanager.iam.gserviceaccount.com"
     artifact = "serviceAccount:service-${local.project_number}@gcp-sa-artifactregistry.iam.gserviceaccount.com"
+    storage  = "serviceAccount:service-${local.project_number}@gs-project-accounts.iam.gserviceaccount.com"
   }
 }
 

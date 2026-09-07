@@ -22,3 +22,7 @@ output "secrets_key_id" {
 output "artifact_key_id" {
   value = google_kms_crypto_key.this["artifact"].id
 }
+
+output "storage_key_id" {
+  value = google_kms_crypto_key.this["storage"].id
+}

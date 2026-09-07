@@ -14,6 +14,13 @@
 #   - Binary Authorization so only attested, mirrored images run
 #   - a dedicated least-privilege node service account
 
+# master_authorized_networks_config is rendered by a dynamic block, which a static analyser cannot evaluate, so this rule fires
+# whatever the input. The dangerous case the rule exists to catch — a public
+# endpoint with no allowlist — is instead refused outright by the precondition
+# at the bottom of this resource, and asserted again in
+# policy/conftest/terraform.rego and tests/lint_terraform.py against the values
+# that will actually be applied.
+# trivy:ignore:AVD-GCP-0061
 resource "google_container_cluster" "this" {
   project  = var.project_id
   name     = var.name_prefix
@@ -175,6 +182,23 @@ resource "google_container_cluster" "this" {
       # The default pool is removed post-create; its count drifting is expected.
       initial_node_count,
     ]
+
+    # A public control-plane endpoint with no authorized networks puts the
+    # Kubernetes API server on the internet for anyone to reach. The two
+    # settings are individually reasonable and catastrophic together, which is
+    # exactly the combination a reviewer skims past — so refuse it at plan time
+    # rather than discovering it in a scan afterwards.
+    precondition {
+      condition = !var.enable_public_endpoint || length(var.master_authorized_networks) > 0
+      error_message = join(" ", [
+        "enable_public_endpoint is true but master_authorized_networks is empty,",
+        "which would expose the Kubernetes API server to the entire internet.",
+        "Either set master_authorized_networks to the CIDRs that need API access",
+        "(your office egress, a bastion, the CI runner), or set",
+        "enable_public_control_plane = false and reach the cluster through a",
+        "bastion, Cloud VPN, or the GKE Connect gateway.",
+      ])
+    }
   }
 }
 
