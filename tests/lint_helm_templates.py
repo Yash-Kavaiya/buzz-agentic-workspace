@@ -74,6 +74,37 @@ def lint(path: Path) -> list[str]:
     return problems
 
 
+def check_helmignore() -> list[str]:
+    """`.helmignore` must not hide anything Helm needs to load.
+
+    Helm applies .helmignore when it LOADS a chart directory, not only when it
+    packages one. An entry like `*.tgz` therefore hides charts/<dep>.tgz — the
+    vendored dependency — and every `helm template` fails with "found in
+    Chart.yaml, but missing in charts/ directory" while the file sits on disk.
+    Nothing else in this repository can catch that, and it cost a CI cycle
+    once already.
+    """
+    helmignore = TEMPLATE_DIR.parent / ".helmignore"
+    if not helmignore.exists():
+        return []
+
+    # Patterns that would hide a vendored dependency or a .Files.Get source.
+    forbidden = {
+        "*.tgz": "hides the vendored chart dependency in charts/",
+        "charts": "hides every chart dependency",
+        "charts/": "hides every chart dependency",
+        "files": "hides files/, which .Files.Get reads the conformance probe from",
+        "files/": "hides files/, which .Files.Get reads the conformance probe from",
+    }
+
+    problems = []
+    for raw in helmignore.read_text().splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if line in forbidden:
+            problems.append(f".helmignore: {line!r} — {forbidden[line]}")
+    return problems
+
+
 def main() -> int:
     templates = sorted(p for p in TEMPLATE_DIR.rglob("*.yaml"))
     if not templates:
@@ -102,6 +133,12 @@ def main() -> int:
     if unguarded:
         print(f"note: no validate guard in {', '.join(unguarded)} "
               "(fine for templates that only render when a parent is enabled)")
+
+    for problem in check_helmignore():
+        print(f"FAIL {problem}", file=sys.stderr)
+        failures += 1
+    if not check_helmignore():
+        print("ok   .helmignore hides nothing helm needs to load")
 
     if failures:
         print(f"\n{failures} structural problem(s)", file=sys.stderr)

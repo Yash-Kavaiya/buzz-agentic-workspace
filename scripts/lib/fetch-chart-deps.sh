@@ -2,18 +2,16 @@
 #
 # Vendor the upstream Buzz chart into helm/buzz-gke/charts/.
 #
-# Why not `helm dependency build`: against this OCI dependency it reports the
-# pull succeeding —
+# `helm dependency build` also works, and the original reason for replacing it
+# turned out to be a misdiagnosis worth recording: `helm template` was failing
+# with "found in Chart.yaml, but missing in charts/ directory: buzz" while the
+# tarball was demonstrably on disk. The cause was `*.tgz` in .helmignore, which
+# Helm applies when LOADING a chart directory, so it skipped the dependency it
+# had just written. Not the downloader's fault at all.
 #
-#     Saving 1 charts
-#     Downloading buzz from repo oci://ghcr.io/block/buzz/charts
-#     Pulled: ghcr.io/block/buzz/charts/buzz:0.1.8
-#     Deleting outdated charts
-#
-# — and then leaves charts/ empty, so the very next `helm template` fails with
-# "found in Chart.yaml, but missing in charts/ directory: buzz". `helm pull`
-# does the one thing needed and puts the artifact exactly where it belongs, so
-# that is what CI, the local checks and `buzzctl deploy` all use.
+# This script stays because the post-condition below — assert the artifact
+# exists at the exact path Helm will look for — is what turned an opaque error
+# into a locatable one. `helm dependency build` gives no such guarantee.
 #
 # The dependency's coordinates are read from Chart.yaml rather than repeated
 # here, so bumping the upstream version stays a one-line change.
