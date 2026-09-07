@@ -159,9 +159,12 @@ deny contains msg if {
 # Probing the app port reports the process, not whether Postgres, Redis and
 # object storage are reachable.
 
+# GKE policy CRDs nest their settings under a field literally named `default`,
+# which is a Rego keyword — it has to be reached with bracket notation, or the
+# policy file fails to parse and every check in it silently stops running.
 deny contains msg if {
 	input.kind == "HealthCheckPolicy"
-	input.spec.default.config.httpHealthCheck.port == 3000
+	input.spec["default"].config.httpHealthCheck.port == 3000
 	msg := sprintf(
 		"HealthCheckPolicy/%s: health checks must target the health port (8080), not the app port (3000).",
 		[input.metadata.name],
@@ -174,9 +177,9 @@ deny contains msg if {
 
 deny contains msg if {
 	input.kind == "GCPBackendPolicy"
-	timeout := object.get(input.spec.default, "timeoutSec", 30)
+	timeout := object.get(input.spec["default"], "timeoutSec", 30)
 	timeout < 3600
-	not input.spec.default.iap
+	not input.spec["default"].iap
 	msg := sprintf(
 		"GCPBackendPolicy/%s: timeoutSec is %d. Long-lived WebSockets need 3600; below that clients disconnect on idle.",
 		[input.metadata.name, timeout],

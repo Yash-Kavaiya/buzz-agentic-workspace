@@ -42,6 +42,11 @@ jobs:
         with:
           scan-type: config
           scan-ref: .
+          # tests/fixtures holds deliberately-insecure manifests whose whole
+          # purpose is to trip the conftest deny rules (tests/test_policy.sh).
+          # Scanning them reports the very misconfigurations they are built to
+          # contain, which is noise, not signal.
+          skip-dirs: tests/fixtures
           format: sarif
           output: trivy-config.sarif
           severity: HIGH,CRITICAL

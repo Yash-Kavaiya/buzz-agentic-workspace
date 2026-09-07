@@ -52,6 +52,7 @@ else
 fi
 
 run "helm template structure" python3 tests/lint_helm_templates.py
+run "conftest policies" ./tests/test_policy.sh
 
 if missing_python_dep hcl2; then
   printf '\n%s── terraform invariants%s\n' "$BOLD" "$RESET"
@@ -99,14 +100,21 @@ else
 fi
 
 if command -v helm >/dev/null 2>&1; then
-  run "helm lint" bash -c "
+  # Both, with the same three value layers CI uses. `lint` is what applies the
+  # upstream chart's values.schema.json — `template` alone does not, so linting
+  # here is what catches a value the subchart's schema rejects.
+  run "helm lint + template" bash -c "
     ./scripts/lib/fetch-chart-deps.sh >/dev/null &&
+    helm lint helm/buzz-gke \
+      --values helm/buzz-gke/values.yaml \
+      --values helm/buzz-gke/values-prod.yaml \
+      --values .github/ci-values.yaml &&
     helm template buzz helm/buzz-gke --namespace buzz \
       --values helm/buzz-gke/values.yaml \
       --values helm/buzz-gke/values-prod.yaml \
       --values .github/ci-values.yaml >/dev/null"
 else
-  printf '\n%s── helm template%s\n' "$BOLD" "$RESET"
+  printf '\n%s── helm lint + template%s\n' "$BOLD" "$RESET"
   printf '%s   skipped: helm is not installed. CI runs it.%s\n' "$DIM" "$RESET"
 fi
 

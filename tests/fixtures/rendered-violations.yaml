@@ -1,0 +1,86 @@
+# Deliberately bad manifests, one per deny rule in policy/conftest/helm.rego.
+#
+# Their only purpose is to prove the rules fire. A policy that parses but never
+# matches is worse than no policy: it reports success forever. Every rule in
+# helm.rego should be represented here, so adding a rule means adding a case.
+#
+# Excluded from the Trivy config scan (skip-dirs in
+# .github/workflows/security-scan.yml): scanning manifests built to
+# contain misconfigurations reports those misconfigurations.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: buzz
+  labels:
+    app.kubernetes.io/name: buzz
+    app.kubernetes.io/instance: buzz
+spec:
+  replicas: 1                      # warn: single replica
+  template:
+    spec:
+      securityContext: {}          # deny: runAsNonRoot not true
+      initContainers:
+        - name: cloud-sql-proxy
+          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1
+          # deny: no restartPolicy Always — never becomes a sidecar
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            limits:
+              memory: 512Mi
+      containers:
+        - name: relay
+          image: ghcr.io/block/buzz:v0.5.23   # deny: tag, not digest
+          securityContext:
+            allowPrivilegeEscalation: true    # deny
+            capabilities:
+              drop: []                        # deny: does not drop ALL
+          env:
+            - name: BUZZ_RELAY_PRIVATE_KEY
+              value: "deadbeef"               # deny: literal secret, no secretKeyRef
+          resources: {}                       # deny: no memory limit
+---
+apiVersion: networking.gke.io/v1
+kind: HealthCheckPolicy
+metadata:
+  name: buzz-hc
+spec:
+  default:
+    config:
+      type: HTTP
+      httpHealthCheck:
+        port: 3000                 # deny: app port, not the health port
+---
+apiVersion: networking.gke.io/v1
+kind: GCPBackendPolicy
+metadata:
+  name: buzz-backend
+spec:
+  default:
+    timeoutSec: 30                 # deny: severs long-lived WebSockets
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: buzz-minio
+  labels:
+    app.kubernetes.io/component: object-storage
+spec:
+  replicas: 2                      # warn: neither redundant nor a valid erasure set
+  template:
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: minio
+          image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            limits:
+              memory: 8Gi

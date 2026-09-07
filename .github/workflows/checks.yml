@@ -54,6 +54,17 @@ jobs:
 
       - run: pip install --quiet pyyaml boto3 python-hcl2 yamllint
 
+      - name: install conftest
+        # So tests/test_policy.sh runs here instead of skipping. It checks that
+        # the Rego parses and that every deny rule actually fires — a syntax
+        # error stops the whole policy file loading, which reads as success.
+        run: |
+          CONFTEST=0.56.0
+          BASE=https://github.com/open-policy-agent/conftest/releases/download
+          curl -sSL "$BASE/v$CONFTEST/conftest_${CONFTEST}_Linux_x86_64.tar.gz" \
+            | tar xz conftest
+          sudo mv conftest /usr/local/bin/
+
       - name: unit and conformance tests
         run: ./tests/run_all.sh
 
@@ -100,15 +111,14 @@ jobs:
         run: ./scripts/lib/fetch-chart-deps.sh
 
       - name: lint
+        # Same three value layers the template step uses. Linting with a
+        # different set is how "lint is missing a --set" failures happen, and
+        # they say nothing about the chart.
         run: |
           helm lint helm/buzz-gke \
             --values helm/buzz-gke/values.yaml \
             --values helm/buzz-gke/values-${{ matrix.environment }}.yaml \
-            --set gcp.projectId=ci-project \
-            --set gcp.namePrefix=buzz-${{ matrix.environment }} \
-            --set buzz.relayUrl=wss://buzz.example.com \
-            --set buzz.ownerPubkey=0000000000000000000000000000000000000000000000000000000000000000 \
-            --set buzz.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000
+            --values .github/ci-values.yaml
 
       - name: template
         run: |
