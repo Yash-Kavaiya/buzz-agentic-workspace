@@ -1,0 +1,93 @@
+# The same resources, configured the way the chart actually renders them.
+#
+# Paired with rendered-violations.yaml: that file proves the rules fire, this
+# one proves they do not fire on correct input. A rule that matches everything
+# is as useless as one that matches nothing.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: buzz
+  labels:
+    app.kubernetes.io/name: buzz
+    app.kubernetes.io/instance: buzz
+spec:
+  replicas: 3
+  template:
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      initContainers:
+        - name: cloud-sql-proxy
+          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1
+          restartPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            limits:
+              cpu: "1"
+              memory: 512Mi
+      containers:
+        - name: relay
+          image: us-central1-docker.pkg.dev/p/buzz/buzz@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          env:
+            - name: BUZZ_RELAY_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: buzz-secrets
+                  key: BUZZ_RELAY_PRIVATE_KEY
+          resources:
+            limits:
+              cpu: "4"
+              memory: 4Gi
+---
+apiVersion: networking.gke.io/v1
+kind: HealthCheckPolicy
+metadata:
+  name: buzz-hc
+spec:
+  default:
+    config:
+      type: HTTP
+      httpHealthCheck:
+        port: 8080
+---
+apiVersion: networking.gke.io/v1
+kind: GCPBackendPolicy
+metadata:
+  name: buzz-backend
+spec:
+  default:
+    timeoutSec: 3600
+    securityPolicy: buzz-prod-armor
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: buzz-minio
+  labels:
+    app.kubernetes.io/component: object-storage
+spec:
+  replicas: 4
+  template:
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: minio
+          image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            limits:
+              cpu: "4"
+              memory: 16Gi

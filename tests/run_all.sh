@@ -52,6 +52,7 @@ else
 fi
 
 run "helm template structure" python3 tests/lint_helm_templates.py
+run "conftest policies" ./tests/test_policy.sh
 
 if missing_python_dep hcl2; then
   printf '\n%s── terraform invariants%s\n' "$BOLD" "$RESET"

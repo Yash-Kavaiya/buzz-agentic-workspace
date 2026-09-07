@@ -54,6 +54,17 @@ jobs:
 
       - run: pip install --quiet pyyaml boto3 python-hcl2 yamllint
 
+      - name: install conftest
+        # So tests/test_policy.sh runs here instead of skipping. It checks that
+        # the Rego parses and that every deny rule actually fires — a syntax
+        # error stops the whole policy file loading, which reads as success.
+        run: |
+          CONFTEST=0.56.0
+          BASE=https://github.com/open-policy-agent/conftest/releases/download
+          curl -sSL "$BASE/v$CONFTEST/conftest_${CONFTEST}_Linux_x86_64.tar.gz" \
+            | tar xz conftest
+          sudo mv conftest /usr/local/bin/
+
       - name: unit and conformance tests
         run: ./tests/run_all.sh
 
