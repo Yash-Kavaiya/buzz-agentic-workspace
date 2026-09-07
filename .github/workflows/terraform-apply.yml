@@ -1,0 +1,87 @@
+name: terraform apply
+
+# Manual only, and gated by a GitHub environment so production requires a
+# reviewer's approval before the job starts. Nothing here runs on a push:
+# infrastructure changes to a live workspace should be a deliberate act with a
+# name attached.
+#
+# This applies infrastructure only. `buzzctl deploy` is run by an operator with
+# a network path to the private control plane — CI has none by design.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to apply
+        required: true
+        type: choice
+        options: [dev, staging, prod]
+      confirm:
+        description: Type the environment name again to confirm
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  # Never two applies against one environment's state at once.
+  group: tf-apply-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    name: apply ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    # Configure a required reviewer on the `prod` environment in repository
+    # settings; that is what makes production approval real rather than advisory.
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: check the confirmation
+        if: inputs.confirm != inputs.environment
+        run: |
+          echo "Confirmation '${{ inputs.confirm }}' does not match" \
+               "'${{ inputs.environment }}'." >&2
+          exit 1
+
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_CI_SERVICE_ACCOUNT }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: init
+        run: terraform -chdir=terraform/environments/${{ inputs.environment }} init -input=false
+
+      - name: plan
+        run: |
+          terraform -chdir=terraform/environments/${{ inputs.environment }} plan \
+            -input=false -no-color -var-file=terraform.tfvars -out=tfplan
+
+      - name: policy check
+        run: |
+          terraform -chdir=terraform/environments/${{ inputs.environment }} show \
+            -json tfplan > plan.json
+          CONFTEST=0.56.0
+          BASE=https://github.com/open-policy-agent/conftest/releases/download
+          curl -sSL "$BASE/v$CONFTEST/conftest_${CONFTEST}_Linux_x86_64.tar.gz" \
+            | tar xz conftest
+          ./conftest test --policy policy/conftest --namespace terraform plan.json
+
+      - name: apply
+        # Applies the saved plan, so what is applied is exactly what was
+        # reviewed above — not a fresh plan against drifted state.
+        run: |
+          terraform -chdir=terraform/environments/${{ inputs.environment }} apply \
+            -input=false -no-color tfplan
+
+      - name: next steps
+        run: |
+          terraform -chdir=terraform/environments/${{ inputs.environment }} \
+            output -raw next_steps

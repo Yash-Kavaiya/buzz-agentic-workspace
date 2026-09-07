@@ -1,0 +1,40 @@
+apiVersion: v2
+name: buzz-gke
+description: |
+  Enterprise GKE deployment of Block's Buzz workspace.
+
+  This chart does not reimplement Buzz. It depends on the upstream chart and
+  adds the pieces that upstream deliberately leaves to the platform: Gateway
+  API and Cloud Armor wiring, Google Managed Prometheus scraping, External
+  Secrets, a distributed MinIO object store, and the object-storage
+  conditional-write preflight that gates the whole deployment.
+type: application
+
+# Chart version is this repo's packaging version.
+version: 1.0.0
+
+# The Buzz release this packaging targets. The image itself is always deployed
+# by digest (see buzzctl images mirror) — never by this tag.
+appVersion: "0.5.23"
+
+home: https://github.com/Yash-Kavaiya/buzz-agentic-workspace
+sources:
+  - https://github.com/Yash-Kavaiya/buzz-agentic-workspace
+  - https://github.com/block/buzz
+
+keywords:
+  - buzz
+  - nostr
+  - gke
+  - agentic-workspace
+
+maintainers:
+  - name: Platform Engineering
+
+dependencies:
+  - name: buzz
+    version: "0.1.8"
+    repository: oci://ghcr.io/block/buzz/charts
+    # Always enabled. The conditional exists only so `helm template` can render
+    # this chart's own resources in isolation during CI policy checks.
+    condition: buzz.enabled

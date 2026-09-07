@@ -1,0 +1,46 @@
+# Staging — production topology at a smaller size.
+#
+# The point of this file being almost empty is that staging inherits the
+# production defaults from values.yaml. A setting that only exists in
+# values-prod.yaml is a setting staging never tested.
+
+buzz:
+  replicaCount: 2
+
+  relay:
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 6
+
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+minio:
+  replicas: 4
+  persistence:
+    size: 200Gi
+    storageClass: premium-rwo
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+  backup:
+    enabled: true
+    schedule: "0 3 * * *"
+
+gateway:
+  iap:
+    enabled: true

@@ -1,0 +1,42 @@
+{{ .Chart.Name }} {{ .Chart.Version }} deployed to namespace {{ .Release.Namespace }}.
+
+  Relay      {{ .Values.buzz.relayUrl }}
+{{- if .Values.gateway.admin.enabled }}
+  Admin      https://{{ .Values.gcp.edge.adminHostname }}{{ if .Values.gateway.iap.enabled }}  (behind IAP){{ end }}
+{{- end }}
+  Image      {{ .Values.buzz.image.repository }}@{{ .Values.buzz.image.digest | default "UNPINNED — run buzzctl images mirror" }}
+  Replicas   {{ .Values.buzz.replicaCount }}
+{{- if .Values.minio.enabled }}
+  Object     {{ .Values.minio.replicas }}-node MinIO, bucket {{ .Values.minio.bucket }}
+{{- end }}
+
+Readiness is not instant. The relay runs its own git object-store conformance
+probe at startup ({{ .Values.preflight.writers }} concurrent writers), and does
+not open readiness until it passes. Watch it:
+
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "buzz-gke.relayServiceName" . }} --timeout=10m
+
+Then confirm the deployment end to end:
+
+  buzzctl verify {{ .Values.gcp.namePrefix | replace "buzz-" "" }}
+
+{{- if not .Values.buzz.ownerPubkey }}
+
+WARNING: buzz.ownerPubkey is empty. With requireRelayMembership enabled, nobody
+can join this relay until an owner is set.
+{{- end }}
+
+{{- if and .Values.buzz.relay.pubkeyAllowlist (gt (int .Values.buzz.replicaCount) 0) }}
+
+Access is closed by default: pubkeyAllowlist is on, so a key must be on the
+roster before it can connect. Add people with:
+
+  buzzctl onboard user --env <env> --npub npub1...
+{{- end }}
+
+{{- if and (gt (int .Values.buzz.replicaCount) 1) (not .Values.gcp.redis.transitEncryption) }}
+
+NOTE: Memorystore transit encryption is disabled. Traffic to Redis is
+authenticated but not encrypted. This is a documented fallback — see
+docs/90-adr/ADR-005-memorystore-tls.md — not the default posture.
+{{- end }}

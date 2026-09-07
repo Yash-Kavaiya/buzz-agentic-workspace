@@ -1,0 +1,74 @@
+{{- include "buzz-gke.validate" . -}}
+{{- if and .Values.gateway.enabled .Values.buzz.enabled }}
+# Health check against the relay's PRIVATE health listener (port 8080), not the
+# app port. The app port serves WebSocket upgrades and the web bundle; probing
+# it tells you the process is up but not that Postgres, Redis and object storage
+# are reachable. /_readiness on the health port is the signal that matters —
+# and it is where the relay reports the result of its object-store conformance
+# probe, which is fatal at startup.
+apiVersion: networking.gke.io/v1
+kind: HealthCheckPolicy
+metadata:
+  name: {{ include "buzz-gke.fullname" . }}-hc
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buzz-gke.labels" . | nindent 4 }}
+spec:
+  default:
+    checkIntervalSec: 10
+    timeoutSec: 5
+    healthyThreshold: 1
+    unhealthyThreshold: 3
+    logConfig:
+      enabled: true
+    config:
+      type: HTTP
+      httpHealthCheck:
+        portSpecification: USE_FIXED_PORT
+        port: {{ .Values.buzz.service.healthPort | default 8080 }}
+        requestPath: /_readiness
+  targetRef:
+    group: ""
+    kind: Service
+    name: {{ include "buzz-gke.relayServiceName" . }}
+---
+apiVersion: networking.gke.io/v1
+kind: GCPBackendPolicy
+metadata:
+  name: {{ include "buzz-gke.fullname" . }}-backend
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buzz-gke.labels" . | nindent 4 }}
+spec:
+  default:
+    # Cloud Armor. Terraform owns the rules; this is the binding.
+    {{- if .Values.gcp.edge.securityPolicyName }}
+    securityPolicy: {{ .Values.gcp.edge.securityPolicyName | quote }}
+    {{- end }}
+
+    # The single most important value on this page. Google's default backend
+    # timeout is 30 seconds, which closes every idle WebSocket — Buzz clients
+    # hold connections open for hours and would appear to "randomly disconnect".
+    timeoutSec: {{ .Values.gateway.backendTimeoutSeconds }}
+
+    # Give in-flight requests time to finish when a pod leaves the backend set;
+    # kept under the relay's 60s terminationGracePeriodSeconds.
+    connectionDraining:
+      drainingTimeoutSec: 45
+
+    {{- with .Values.gateway.sessionAffinity }}
+    sessionAffinity:
+      type: {{ .type }}
+      {{- if eq .type "GENERATED_COOKIE" }}
+      cookieTtlSec: {{ .cookieTtlSec }}
+      {{- end }}
+    {{- end }}
+
+    logging:
+      enabled: true
+      sampleRate: 500000
+  targetRef:
+    group: ""
+    kind: Service
+    name: {{ include "buzz-gke.relayServiceName" . }}
+{{- end }}

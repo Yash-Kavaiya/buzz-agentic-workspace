@@ -1,0 +1,122 @@
+name: mirror image
+
+# Copies an upstream Buzz release into Artifact Registry, resolves its immutable
+# digest, and optionally attests it for Binary Authorization.
+#
+# Nothing is deployed here. The output is a digest, which an operator then
+# deploys with `buzzctl deploy`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment registry
+        required: true
+        type: choice
+        options: [dev, staging, prod]
+      version:
+        description: Buzz version to mirror (e.g. 0.5.23). Defaults to the chart appVersion.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: mirror-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_CI_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: install crane
+        # crane copies between registries without a Docker daemon and without
+        # pulling layers to local disk.
+        run: |
+          CRANE=0.20.2
+          BASE=https://github.com/google/go-containerregistry/releases/download
+          curl -sSL "$BASE/v$CRANE/go-containerregistry_Linux_x86_64.tar.gz" \
+            | tar xz crane
+          sudo mv crane /usr/local/bin/
+
+      - name: resolve the registry
+        id: registry
+        run: |
+          terraform -chdir=terraform/environments/${{ inputs.environment }} init -input=false
+          REGISTRY=$(terraform -chdir=terraform/environments/${{ inputs.environment }} \
+            output -json platform | jq -r .registry.repository_url)
+          echo "url=$REGISTRY" >> "$GITHUB_OUTPUT"
+          echo "host=${REGISTRY%%/*}" >> "$GITHUB_OUTPUT"
+
+      - name: mirror
+        id: mirror
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "$VERSION" ]; then
+            VERSION=$(grep -E '^appVersion:' helm/buzz-gke/Chart.yaml \
+              | head -1 | tr -d '"' | awk '{print $2}')
+          fi
+          VERSION="v${VERSION#v}"
+
+          gcloud auth configure-docker "${{ steps.registry.outputs.host }}" --quiet
+          SOURCE="ghcr.io/block/buzz:$VERSION"
+          TARGET="${{ steps.registry.outputs.url }}/buzz:$VERSION"
+
+          echo "mirroring $SOURCE -> $TARGET"
+          crane copy "$SOURCE" "$TARGET"
+
+          DIGEST=$(gcloud artifacts docker images describe "$TARGET" \
+            --format='value(image_summary.digest)')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: attest
+        # Without an attestation the image is refused at admission wherever
+        # Binary Authorization is enforcing. Skipped rather than failed so a dev
+        # mirror (Binary Authorization off) does not need a key.
+        if: vars.BUZZ_ATTESTOR_KEY_VERSION != ''
+        run: |
+          ATTESTOR=$(terraform -chdir=terraform/environments/${{ inputs.environment }} \
+            output -json platform | jq -r .registry.attestor_name)
+          gcloud beta container binauthz attestations sign-and-create \
+            --artifact-url "${{ steps.registry.outputs.url }}/buzz@${{ steps.mirror.outputs.digest }}" \
+            --attestor "$ATTESTOR" \
+            --keyversion "${{ vars.BUZZ_ATTESTOR_KEY_VERSION }}"
+
+      - name: summary
+        run: |
+          {
+            echo "### Mirrored \`${{ steps.mirror.outputs.version }}\`"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| environment | \`${{ inputs.environment }}\` |"
+            echo "| image | \`${{ steps.registry.outputs.url }}/buzz\` |"
+            echo "| digest | \`${{ steps.mirror.outputs.digest }}\` |"
+            echo
+            echo "Deploy it with:"
+            echo
+            echo '```sh'
+            echo "buzzctl images mirror ${{ inputs.environment }}   # records the digest locally"
+            echo "buzzctl preflight ${{ inputs.environment }}"
+            echo "buzzctl deploy ${{ inputs.environment }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

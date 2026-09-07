@@ -1,0 +1,22 @@
+{{- include "buzz-gke.validate" . -}}
+{{- if and .Values.gcp.redis.transitEncryption .Values.gcp.redis.serverCaCertificate }}
+# Memorystore's TLS certificate is signed by a Google-managed PRIVATE CA that
+# is in no public trust store. The relay links Redis over rustls, which reads
+# the system trust store — so without this ConfigMap mounted and SSL_CERT_FILE
+# pointed at it, every rediss:// handshake fails and the relay cannot start
+# with replicaCount > 1.
+#
+# `buzzctl preflight` performs a real handshake against Memorystore using this
+# exact bundle before any deploy, so a CA mismatch surfaces as a preflight
+# failure with a clear message rather than a CrashLoopBackOff.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "buzz-gke.fullname" . }}-redis-ca
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buzz-gke.labels" . | nindent 4 }}
+data:
+  memorystore-ca.pem: |
+    {{- .Values.gcp.redis.serverCaCertificate | nindent 4 }}
+{{- end }}

@@ -1,0 +1,71 @@
+# Placeholder coordinates so `helm template` can render in CI without a cloud.
+#
+# These stand in for what `buzzctl deploy` renders from `terraform output
+# platform`. Every value is obviously fake on purpose: if one of these ever
+# reaches a cluster, it should be unmistakable in a diff.
+
+gcp:
+  projectId: ci-project
+  region: us-central1
+  namePrefix: buzz-ci
+  workloadIdentity:
+    relayServiceAccount: buzz-ci-relay@ci-project.iam.gserviceaccount.com
+    minioBackupServiceAccount: buzz-ci-minio-backup@ci-project.iam.gserviceaccount.com
+  cloudsql:
+    connectionName: ci-project:us-central1:buzz-ci-pg
+    replicaConnectionName: ""
+    autoIamAuthn: false
+  edge:
+    gatewayIpName: buzz-ci-gateway-ip
+    certificateMapName: buzz-ci-certmap
+    securityPolicyName: buzz-ci-armor
+    relayHostname: buzz.ci.invalid
+    adminHostname: buzz-admin.ci.invalid
+  redis:
+    transitEncryption: false
+    serverCaCertificate: ""
+  backup:
+    drBucket: buzz-ci-object-dr
+
+buzz:
+  relayUrl: wss://buzz.ci.invalid
+  ownerPubkey: "0000000000000000000000000000000000000000000000000000000000000000"
+  image:
+    repository: us-central1-docker.pkg.dev/ci-project/buzz/buzz
+    digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  serviceAccount:
+    annotations:
+      iam.gke.io/gcp-service-account: buzz-ci-relay@ci-project.iam.gserviceaccount.com
+  s3:
+    endpoint: http://buzz-minio.buzz.svc.cluster.local:9000
+  httproute:
+    enabled: true
+    parentRefs:
+      - name: buzz
+        namespace: buzz
+        sectionName: https
+    hostnames:
+      - buzz.ci.invalid
+  extraInitContainers:
+    - name: cloud-sql-proxy
+      image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1
+      restartPolicy: Always
+      args:
+        - --structured-logs
+        - --address=127.0.0.1
+        - --port=5432
+        - ci-project:us-central1:buzz-ci-pg
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: "1"
+          memory: 512Mi

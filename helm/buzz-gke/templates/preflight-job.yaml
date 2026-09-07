@@ -1,0 +1,120 @@
+{{- include "buzz-gke.validate" . -}}
+{{- if .Values.preflight.enabled }}
+# Object-storage conformance preflight.
+#
+# This is the gate that keeps a bad object store from becoming an unexplained
+# outage. Buzz's git hosting reduces push safety to one axiom: a linearizable
+# conditional write on the repository's manifest pointer. The relay checks that
+# axiom at startup and treats failure as fatal, which means a non-conforming
+# store presents as a relay that starts, never becomes Ready, and logs a probe
+# report most operators have never seen before.
+#
+# This Job reproduces the same four phases against the configured endpoint
+# BEFORE the relay is deployed, and reports which one failed in plain language.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "buzz-gke.fullname" . }}-preflight
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buzz-gke.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-20"
+    helm.sh/hook-delete-policy: before-hook-creation
+data:
+  storage_conformance.py: |
+{{ .Files.Get "files/storage_conformance.py" | indent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "buzz-gke.fullname" . }}-preflight
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buzz-gke.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    # Kept after success so `kubectl logs` still shows the report; buzzctl
+    # removes it once it has read the result.
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: {{ .Values.preflight.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "buzz-gke.labels" . | nindent 8 }}
+        buzz.io/job: preflight
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: conformance
+          image: {{ .Values.preflight.image | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          env:
+            - name: BUZZ_S3_ENDPOINT
+              value: {{ include "buzz-gke.minio.endpoint" . | quote }}
+            - name: BUZZ_S3_BUCKET
+              value: {{ .Values.minio.bucket | quote }}
+            - name: BUZZ_S3_REGION
+              value: {{ .Values.minio.region | quote }}
+            - name: BUZZ_S3_ADDRESSING_STYLE
+              value: path
+            - name: BUZZ_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalSecrets.targetSecretName }}
+                  key: BUZZ_S3_ACCESS_KEY
+            - name: BUZZ_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalSecrets.targetSecretName }}
+                  key: BUZZ_S3_SECRET_KEY
+            - name: PROBE_WRITERS
+              value: {{ .Values.preflight.writers | quote }}
+            - name: PROBE_ROUNDS
+              value: {{ .Values.preflight.rounds | quote }}
+            - name: PIP_DISABLE_PIP_VERSION_CHECK
+              value: "1"
+            - name: HOME
+              value: /tmp
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              pip install --quiet --target /tmp/pylib boto3 >/dev/null
+              PYTHONPATH=/tmp/pylib python3 /probe/storage_conformance.py
+          volumeMounts:
+            - name: probe
+              mountPath: /probe
+              readOnly: true
+            - name: scratch
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+      volumes:
+        - name: probe
+          configMap:
+            name: {{ include "buzz-gke.fullname" . }}-preflight
+        - name: scratch
+          emptyDir:
+            sizeLimit: 512Mi
+{{- end }}

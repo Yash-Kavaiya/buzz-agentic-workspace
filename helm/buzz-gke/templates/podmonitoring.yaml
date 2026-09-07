@@ -1,0 +1,53 @@
+{{- include "buzz-gke.validate" . -}}
+{{- if and .Values.monitoring.enabled .Values.buzz.enabled }}
+# Google Managed Prometheus scrape config.
+#
+# PodMonitoring rather than upstream's ServiceMonitor: GMP is already enabled on
+# the cluster, whereas ServiceMonitor would require installing the Prometheus
+# Operator CRDs purely to describe one scrape target.
+#
+# Do not add labels here. The upstream chart README documents hard per-pod
+# series ceilings (99 for readiness, 187 for the database pool families); a
+# relabeling rule that introduces pod, version or tenant labels multiplies
+# those and will get the deployment throttled by GMP's ingestion limits.
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: {{ include "buzz-gke.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buzz-gke.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: buzz
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  endpoints:
+    - port: metrics
+      interval: {{ .Values.monitoring.interval }}
+      path: /metrics
+      {{- with .Values.monitoring.extraMetricRelabeling }}
+      metricRelabeling:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- if .Values.minio.enabled }}
+---
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: {{ include "buzz-gke.minio.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buzz-gke.minio.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "buzz-gke.minio.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: api
+      interval: {{ .Values.monitoring.interval }}
+      # Cluster-scoped metrics are unauthenticated only when MinIO's
+      # prometheus auth type is public; buzzctl sets that on the StatefulSet.
+      path: /minio/v2/metrics/cluster
+{{- end }}
+{{- end }}

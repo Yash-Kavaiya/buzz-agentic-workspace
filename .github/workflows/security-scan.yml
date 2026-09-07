@@ -1,0 +1,77 @@
+name: security scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, so a newly disclosed vulnerability in a pinned dependency surfaces
+    # without waiting for someone to open a pull request.
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  secrets:
+    name: secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # gitleaks needs history to scan past commits
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  iac:
+    name: infrastructure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: trivy config
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: config
+          scan-ref: .
+          format: sarif
+          output: trivy-config.sarif
+          severity: HIGH,CRITICAL
+          # Failing the build here would make every finding a merge blocker,
+          # including ones this repository has deliberately accepted and
+          # documented in docs/90-adr. Findings go to the Security tab, where
+          # they can be triaged.
+          exit-code: '0'
+
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-config.sarif
+          category: trivy-config
+
+  images:
+    name: pinned images
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The images this platform runs alongside the relay. The relay's own
+        # image is scanned by whatever gates the mirror; these are ours to pin.
+        image:
+          - quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+          - quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
+          - gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: trivy image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ matrix.image }}
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '0'

@@ -1,0 +1,110 @@
+name: terraform plan
+
+# Runs a real plan against the cloud on any pull request that touches
+# infrastructure, and posts the result on the PR. Read-only: it authenticates
+# with a keyless federated identity that has `viewer` plus state access, and it
+# never applies.
+
+on:
+  pull_request:
+    paths:
+      - 'terraform/**'
+      - '.github/workflows/terraform-plan.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write        # required to mint the OIDC token for federation
+  pull-requests: write   # to post the plan summary
+
+concurrency:
+  group: tf-plan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: plan ${{ matrix.environment }}
+    runs-on: ubuntu-latest
+    # Skip cleanly rather than failing when federation is not configured yet,
+    # so a fork or a fresh clone does not show a red X for a missing secret.
+    if: vars.GCP_WORKLOAD_IDENTITY_PROVIDER != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, staging, prod]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          # Both come from `terraform/bootstrap`; see its
+          # github_actions_auth_snippet output.
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_CI_SERVICE_ACCOUNT }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: init
+        run: terraform -chdir=terraform/environments/${{ matrix.environment }} init -input=false
+
+      - name: plan
+        id: plan
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          terraform -chdir=terraform/environments/${{ matrix.environment }} plan \
+            -input=false -lock=false -no-color \
+            -var-file=terraform.tfvars \
+            -out=tfplan 2>&1 | tee plan.txt
+          echo "exitcode=$?" >> "$GITHUB_OUTPUT"
+
+      - name: policy check
+        if: steps.plan.outcome == 'success'
+        run: |
+          terraform -chdir=terraform/environments/${{ matrix.environment }} show \
+            -json tfplan > plan.json
+          CONFTEST=0.56.0
+          BASE=https://github.com/open-policy-agent/conftest/releases/download
+          curl -sSL "$BASE/v$CONFTEST/conftest_${CONFTEST}_Linux_x86_64.tar.gz" \
+            | tar xz conftest
+          ./conftest test --policy policy/conftest --namespace terraform plan.json
+
+      - name: comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let plan = '';
+            try {
+              plan = fs.readFileSync('plan.txt', 'utf8');
+            } catch (e) {
+              plan = 'No plan output was produced.';
+            }
+            // A full plan can exceed GitHub's 65536-character comment limit.
+            const limit = 60000;
+            const body = plan.length > limit
+              ? plan.slice(0, limit) + '\n\n...truncated. See the job log for the full plan.'
+              : plan;
+            const outcome = '${{ steps.plan.outcome }}';
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: [
+                `### Terraform plan — \`${{ matrix.environment }}\` (${outcome})`,
+                '',
+                '<details><summary>Show plan</summary>',
+                '',
+                '```terraform',
+                body,
+                '```',
+                '',
+                '</details>',
+              ].join('\n'),
+            });
+
+      - name: fail if the plan failed
+        if: steps.plan.outcome != 'success'
+        run: exit 1

@@ -1,0 +1,157 @@
+{{- include "buzz-gke.validate" . -}}
+{{- if .Values.minio.enabled }}
+# Bucket and application-user provisioning.
+#
+# Runs as a Helm post-install/post-upgrade hook so it lands after MinIO is
+# scheduled but before anyone declares the release healthy. It is idempotent:
+# every mc command below either ignores an existing object or overwrites the
+# same definition, so re-running on every upgrade is safe and is what keeps the
+# policy in sync when this template changes.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "buzz-gke.minio.fullname" . }}-init
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buzz-gke.minio.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 6
+  activeDeadlineSeconds: 900
+  template:
+    metadata:
+      labels:
+        {{- include "buzz-gke.minio.selectorLabels" . | nindent 8 }}
+        buzz.io/job: minio-init
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mc
+          image: {{ .Values.minio.mcImage | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "buzz-gke.minio.fullname" . }}-root
+                  key: MINIO_ROOT_USER
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "buzz-gke.minio.fullname" . }}-root
+                  key: MINIO_ROOT_PASSWORD
+            - name: BUZZ_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalSecrets.targetSecretName }}
+                  key: BUZZ_S3_ACCESS_KEY
+            - name: BUZZ_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalSecrets.targetSecretName }}
+                  key: BUZZ_S3_SECRET_KEY
+            - name: MINIO_ENDPOINT
+              value: {{ include "buzz-gke.minio.endpoint" . | quote }}
+            - name: BUCKET
+              value: {{ .Values.minio.bucket | quote }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+
+              echo "waiting for MinIO to accept connections..."
+              for i in $(seq 1 60); do
+                if mc alias set buzz "$MINIO_ENDPOINT" "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; then
+                  echo "connected"
+                  break
+                fi
+                if [ "$i" = "60" ]; then
+                  echo "MinIO did not become reachable at $MINIO_ENDPOINT" >&2
+                  exit 1
+                fi
+                sleep 5
+              done
+
+              echo "creating bucket $BUCKET (idempotent)"
+              mc mb --ignore-existing "buzz/$BUCKET"
+
+              {{- if .Values.minio.versioning }}
+              # Versioning is not optional if whole-community deletion will ever
+              # be used: `buzz-admin deletions` drives ListObjectVersions and
+              # DeleteObjectVersion, which S3 only exposes on a versioned bucket.
+              echo "enabling object versioning"
+              mc version enable "buzz/$BUCKET"
+              {{- end }}
+
+              # Least-privilege policy for the relay. Two distinct scopes:
+              #   bucket ARN  — ListBucket / ListBucketVersions / GetBucketLocation
+              #   object ARN  — Get / Put / Delete, including versioned deletes
+              # ListBucket at the bucket level is separate from the object-level
+              # grants and is what the hourly storage sweep needs; without it
+              # buzz_storage_sweep_ok stays 0 while media still works.
+              cat >/tmp/buzz-relay-policy.json <<POLICY
+              {
+                "Version": "2012-10-17",
+                "Statement": [
+                  {
+                    "Effect": "Allow",
+                    "Action": [
+                      "s3:GetBucketLocation",
+                      "s3:ListBucket",
+                      "s3:ListBucketVersions",
+                      "s3:ListBucketMultipartUploads"
+                    ],
+                    "Resource": ["arn:aws:s3:::$BUCKET"]
+                  },
+                  {
+                    "Effect": "Allow",
+                    "Action": [
+                      "s3:GetObject",
+                      "s3:PutObject",
+                      "s3:DeleteObject",
+                      "s3:GetObjectVersion",
+                      "s3:DeleteObjectVersion",
+                      "s3:AbortMultipartUpload",
+                      "s3:ListMultipartUploadParts"
+                    ],
+                    "Resource": ["arn:aws:s3:::$BUCKET/*"]
+                  }
+                ]
+              }
+              POLICY
+
+              echo "applying relay access policy"
+              mc admin policy create buzz buzz-relay /tmp/buzz-relay-policy.json 2>/dev/null \
+                || mc admin policy update buzz buzz-relay /tmp/buzz-relay-policy.json
+
+              echo "ensuring relay service account exists"
+              mc admin user add buzz "$BUZZ_S3_ACCESS_KEY" "$BUZZ_S3_SECRET_KEY" 2>/dev/null || true
+              mc admin policy attach buzz buzz-relay --user "$BUZZ_S3_ACCESS_KEY" 2>/dev/null || true
+              mc admin user enable buzz "$BUZZ_S3_ACCESS_KEY"
+
+              echo "verifying the relay credentials can actually reach the bucket"
+              mc alias set relay "$MINIO_ENDPOINT" "$BUZZ_S3_ACCESS_KEY" "$BUZZ_S3_SECRET_KEY"
+              mc ls "relay/$BUCKET" >/dev/null
+
+              echo "minio init complete"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+{{- end }}
