@@ -3,6 +3,10 @@
 # Paired with rendered-violations.yaml: that file proves the rules fire, this
 # one proves they do not fire on correct input. A rule that matches everything
 # is as useless as one that matches nothing.
+#
+# Excluded from the Trivy config scan (skip-dirs in
+# .github/workflows/security-scan.yml): scanning manifests built to
+# contain misconfigurations reports those misconfigurations.
 ---
 apiVersion: apps/v1
 kind: Deployment

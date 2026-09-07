@@ -3,6 +3,10 @@
 # Their only purpose is to prove the rules fire. A policy that parses but never
 # matches is worse than no policy: it reports success forever. Every rule in
 # helm.rego should be represented here, so adding a rule means adding a case.
+#
+# Excluded from the Trivy config scan (skip-dirs in
+# .github/workflows/security-scan.yml): scanning manifests built to
+# contain misconfigurations reports those misconfigurations.
 ---
 apiVersion: apps/v1
 kind: Deployment
