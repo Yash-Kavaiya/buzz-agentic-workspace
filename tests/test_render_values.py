@@ -147,8 +147,24 @@ def main() -> int:
     failures += not check(route["parentRefs"][0]["sectionName"] == "https",
                           "the route attaches to the HTTPS listener")
 
-    failures += not check(len(buzz["extraVolumes"]) == 1,
-                          "the Redis CA volume is rendered")
+    volumes = {volume["name"]: volume for volume in buzz["extraVolumes"]}
+    failures += not check("redis-ca" in volumes, "the Redis CA volume is rendered")
+    dashboard = volumes.get("admin-dashboard", {}).get("configMap", {})
+    failures += not check(dashboard.get("name") == "buzz-admin-dashboard",
+                          "the dashboard volume names the chart's ConfigMap")
+    paths = {item["path"] for item in dashboard.get("items", [])}
+    failures += not check({"index.html", "favicon.svg", "assets/app.js", "assets/api.js",
+                           "assets/app.css"} == paths,
+                          "dashboard files land on the only paths the relay serves")
+    failures += not check(env_value(relay_env, "BUZZ_ADMIN_WEB_DIR") == render_values.DASHBOARD_MOUNT,
+                          "the relay serves the mounted dashboard")
+    failures += not check(values["adminDashboard"]["enabled"] is True,
+                          "the dashboard ConfigMap is enabled with the mount")
+    failures += not check(
+        len(buzz["relay"]["podAnnotations"]["buzz-gke/admin-dashboard-checksum"]) == 64,
+        "a dashboard change rolls the relay pods")
+    failures += not check(env_value(relay_env, "BUZZ_STORAGE_METRICS") is None,
+                          "BUZZ_STORAGE_METRICS is left to the upstream chart")
     failures += not check(buzz["relay"]["extraVolumeMounts"][0]["readOnly"] is True,
                           "the CA is mounted read-only")
 
@@ -159,11 +175,24 @@ def main() -> int:
     plain = dict(PLATFORM)
     plain["redis"] = {**PLATFORM["redis"], "transit_encryption_enabled": False}
     values_plain = render_values.build(plain, CONFIG, DIGEST, "", "buzz")
-    failures += not check("extraVolumes" not in values_plain["buzz"],
-                          "no CA volume is rendered")
+    failures += not check(
+        all(volume["name"] != "redis-ca" for volume in values_plain["buzz"]["extraVolumes"]),
+        "no CA volume is rendered")
     failures += not check(
         env_value(values_plain["buzz"]["relay"]["extraEnv"], "SSL_CERT_FILE") is None,
         "SSL_CERT_FILE is not set, so the default trust store stays intact")
+
+    print("\nwith the admin dashboard disabled:")
+    no_dashboard = render_values.build(
+        PLATFORM, {**CONFIG, "adminDashboard": {"enabled": False}}, DIGEST, ca, "buzz")
+    failures += not check(no_dashboard["adminDashboard"]["enabled"] is False,
+                          "the ConfigMap is off")
+    failures += not check(
+        env_value(no_dashboard["buzz"]["relay"]["extraEnv"], "BUZZ_ADMIN_WEB_DIR") is None,
+        "the relay keeps its built-in console")
+    failures += not check(
+        all(volume["name"] != "admin-dashboard" for volume in no_dashboard["buzz"]["extraVolumes"]),
+        "no dashboard volume is mounted")
 
     print("\nwith a read replica:")
     replica = dict(PLATFORM)

@@ -302,8 +302,10 @@ cmd_images() {
   fi
   [[ -n "$version" ]] || die "could not determine the Buzz version to mirror; pass --version"
 
-  local source_ref="${UPSTREAM_IMAGE}:v${version#v}"
-  local target_ref="${registry}/buzz:v${version#v}"
+  # Upstream relay image tags have no "v" prefix.
+  version="${version#v}"
+  local source_ref="${UPSTREAM_IMAGE}:${version}"
+  local target_ref="${registry}/buzz:${version}"
 
   step "Mirroring $source_ref -> $target_ref"
   dim "the deploy always runs the digest, never this tag"
@@ -666,12 +668,11 @@ cmd_verify() {
     local families
     families="$(grep -c '^# TYPE' <<<"$metrics" || true)"
     ok "$families metric families exposed"
-    if grep -q '^buzz_storage_sweep_ok 1' <<<"$metrics"; then
-      ok "object-storage sweep healthy"
-    elif grep -q '^buzz_storage_sweep_ok 0' <<<"$metrics"; then
-      warn "buzz_storage_sweep_ok is 0 — the relay's credentials are probably
-     missing bucket-level s3:ListBucket. Media still works; usage metrics and
-     community deletion do not."
+    if grep -q '^buzz_storage_snapshot_load_ok 1' <<<"$metrics"; then
+      ok "storage snapshot reader healthy"
+    elif grep -q '^buzz_storage_snapshot_load_ok 0' <<<"$metrics"; then
+      warn "buzz_storage_snapshot_load_ok is 0 — the relay could not read its
+     storage snapshot from Postgres. Media still works; storage gauges do not."
     fi
   else
     warn "could not scrape /metrics"

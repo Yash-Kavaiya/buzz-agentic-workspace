@@ -26,6 +26,14 @@ ever changes its helper, this is the one place to follow.
 {{- include "buzz-gke.fullname" . -}}
 {{- end -}}
 
+{{/*
+The admin console's own Service. IAP attaches per Service, so it must differ
+from the relay Service that Nostr clients use.
+*/}}
+{{- define "buzz-gke.adminServiceName" -}}
+{{- printf "%s-admin" (include "buzz-gke.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
 {{- define "buzz-gke.labels" -}}
 helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
 app.kubernetes.io/name: {{ include "buzz-gke.name" . }}

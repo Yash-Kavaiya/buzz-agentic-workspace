@@ -130,27 +130,26 @@ resource "google_monitoring_alert_policy" "relay_down" {
 
 resource "google_monitoring_alert_policy" "storage_sweep_failing" {
   project      = var.project_id
-  display_name = "${var.name_prefix} object-storage sweep failing"
+  display_name = "${var.name_prefix} storage snapshot read failing"
   combiner     = "OR"
   severity     = "WARNING"
 
   documentation {
     content   = <<-EOT
-      `buzz_storage_sweep_ok` is 0: the relay's hourly bucket sweep is failing.
+      `buzz_storage_snapshot_load_ok` is 0: the relay could not read the
+      latest storage snapshot from Postgres.
 
-      Most often the MinIO credentials lack bucket-level `s3:ListBucket`, which
-      is a distinct grant from the object-level permissions media needs. Media
-      upload and download are unaffected while this is firing, so it is a
-      warning rather than a page — but usage metrics and the deletion control
-      plane both depend on it.
+      Media upload and download are unaffected while this is firing, so it is
+      a warning rather than a page. Storage gauges stop refreshing until the
+      read succeeds.
     EOT
     mime_type = "text/markdown"
   }
 
   conditions {
-    display_name = "buzz_storage_sweep_ok == 0"
+    display_name = "buzz_storage_snapshot_load_ok == 0"
     condition_threshold {
-      filter          = "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/buzz_storage_sweep_ok/gauge\""
+      filter          = "resource.type = \"prometheus_target\" AND metric.type = \"prometheus.googleapis.com/buzz_storage_snapshot_load_ok/gauge\""
       comparison      = "COMPARISON_LT"
       threshold_value = 1
       duration        = "1800s"

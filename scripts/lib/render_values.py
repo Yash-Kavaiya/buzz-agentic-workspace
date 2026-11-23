@@ -18,12 +18,40 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+
+DASHBOARD_DIR = Path(__file__).resolve().parents[2] / "helm" / "buzz-gke" / "files" / "admin-dashboard"
+DASHBOARD_MOUNT = "/srv/buzz-gke/admin-dashboard"
+# The relay serves only /assets/* and /favicon.svg from its admin web directory,
+# and ConfigMap keys cannot contain a slash, so each file is projected to its path.
+DASHBOARD_FILES = {
+    "index.html": "index.html",
+    "favicon.svg": "favicon.svg",
+    "app.js": "assets/app.js",
+    "api.js": "assets/api.js",
+    "app.css": "assets/app.css",
+}
+
+
+def dashboard_enabled(platform: dict[str, Any], config: dict[str, Any]) -> bool:
+    if not platform["edge"].get("admin_hostname"):
+        return False
+    return bool((config.get("adminDashboard") or {}).get("enabled", True))
+
+
+def dashboard_checksum() -> str:
+    digest = hashlib.sha256()
+    for name in sorted(DASHBOARD_FILES):
+        digest.update(name.encode())
+        digest.update((DASHBOARD_DIR / name).read_bytes())
+    return digest.hexdigest()
 
 
 # Kubernetes 1.29+ honours restartPolicy: Always on an init container, which
@@ -124,6 +152,8 @@ def relay_extra_env(platform: dict[str, Any], config: dict[str, Any]) -> list[di
     if admin_host:
         env.append({"name": "BUZZ_ADMIN_HOST", "value": admin_host})
         env.append({"name": "BUZZ_ADMIN_AUTH", "value": "nip98"})
+        if dashboard_enabled(platform, config):
+            env.append({"name": "BUZZ_ADMIN_WEB_DIR", "value": DASHBOARD_MOUNT})
         # Community provisioning verifies NIP-98 requests against this origin;
         # a mismatch rejects every admin call with an opaque auth error.
         env.append({
@@ -145,9 +175,8 @@ def relay_extra_env(platform: dict[str, Any], config: dict[str, Any]) -> list[di
         if key in limits and limits[key] is not None:
             env.append({"name": name, "value": str(limits[key])})
 
-    # The hourly bucket sweep needs bucket-level s3:ListBucket, which the MinIO
-    # init job grants. Left on so buzz_storage_sweep_ok is a live signal.
-    env.append({"name": "BUZZ_STORAGE_METRICS", "value": "on"})
+    # BUZZ_STORAGE_METRICS is deliberately absent: chart 0.1.13 sets it from
+    # storageAccounting.relayMode, and a second entry would be a duplicate env.
 
     if platform["redis"].get("transit_encryption_enabled"):
         # Memorystore presents a certificate from a Google-managed private CA.
@@ -199,6 +228,7 @@ def build(platform: dict[str, Any], config: dict[str, Any], image_digest: str,
             },
         },
         "operators": config.get("operators") or [],
+        "adminDashboard": {"enabled": dashboard_enabled(platform, config)},
         "buzz": {
             "relayUrl": edge["relay_url"],
             "ownerPubkey": config.get("ownerPubkey") or "",
@@ -243,21 +273,47 @@ def build(platform: dict[str, Any], config: dict[str, Any], image_digest: str,
     if redis_ca:
         # The volume goes on the pod; the mount goes on the relay container.
         # Upstream keeps these as two separate extension points.
-        values["buzz"]["extraVolumes"] = [
+        values["buzz"].setdefault("extraVolumes", []).append(
             {
                 "name": "redis-ca",
                 "configMap": {
                     "name": f"{release}-redis-ca" if "buzz" in release else f"{release}-buzz-redis-ca",
                 },
             }
-        ]
-        values["buzz"]["relay"]["extraVolumeMounts"] = [
+        )
+        values["buzz"]["relay"].setdefault("extraVolumeMounts", []).append(
             {
                 "name": "redis-ca",
                 "mountPath": "/etc/buzz/redis-ca",
                 "readOnly": True,
             }
-        ]
+        )
+
+    if dashboard_enabled(platform, config):
+        prefix = release if "buzz" in release else f"{release}-buzz"
+        values["buzz"].setdefault("extraVolumes", []).append(
+            {
+                "name": "admin-dashboard",
+                "configMap": {
+                    "name": f"{prefix}-admin-dashboard",
+                    "items": [
+                        {"key": key, "path": path} for key, path in DASHBOARD_FILES.items()
+                    ],
+                },
+            }
+        )
+        values["buzz"]["relay"].setdefault("extraVolumeMounts", []).append(
+            {
+                "name": "admin-dashboard",
+                "mountPath": DASHBOARD_MOUNT,
+                "readOnly": True,
+            }
+        )
+        # The upstream chart cannot see this chart's ConfigMap, so the checksum
+        # is what rolls the relay pods when the dashboard changes.
+        values["buzz"]["relay"]["podAnnotations"] = {
+            "buzz-gke/admin-dashboard-checksum": dashboard_checksum(),
+        }
 
     return values
 

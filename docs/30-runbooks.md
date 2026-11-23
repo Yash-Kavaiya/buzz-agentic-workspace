@@ -91,7 +91,7 @@ and re-apply. This looks like a registry problem in the pod events and is not.
 ## Upgrading Buzz
 
 ```sh
-buzzctl images mirror <env> --version 0.5.24
+buzzctl images mirror <env> --version 0.3.0
 buzzctl preflight <env>
 buzzctl deploy <env>
 buzzctl verify <env>
@@ -210,14 +210,17 @@ clients hold connections for hours.
 
 ---
 
-## `buzz_storage_sweep_ok` is 0
+## `buzz_storage_snapshot_load_ok` is 0
 
-The hourly bucket sweep is failing. Media upload and download are unaffected;
-usage metrics and the community-deletion control plane are not.
+The relay could not read the latest storage snapshot from Postgres. Media upload
+and download are unaffected. Since relay 0.3.0 the relay no longer sweeps the
+bucket itself. An optional worker (`buzz.storageAccounting.enabled`) writes the
+snapshots, and it is off by default because it reserves 20 GiB of memory.
 
-Almost always the relay's credentials lack **bucket-level** `s3:ListBucket`,
-which is a separate grant from the object-level permissions media needs. The
-MinIO init job applies the correct policy — re-run it:
+If you enable the worker and its scan fails, the relay's credentials probably
+lack **bucket-level** `s3:ListBucket`, which is a separate grant from the
+object-level permissions media needs. The MinIO init job applies the correct
+policy — re-run it:
 
 ```sh
 kubectl -n buzz delete job buzz-minio-init

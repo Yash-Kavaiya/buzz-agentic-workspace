@@ -15,7 +15,7 @@ on:
         type: choice
         options: [dev, staging, prod]
       version:
-        description: Buzz version to mirror (e.g. 0.5.23). Defaults to the chart appVersion.
+        description: Buzz version to mirror (e.g. 0.3.0). Defaults to the chart appVersion.
         required: false
         type: string
 
@@ -74,7 +74,8 @@ jobs:
             VERSION=$(grep -E '^appVersion:' helm/buzz-gke/Chart.yaml \
               | head -1 | tr -d '"' | awk '{print $2}')
           fi
-          VERSION="v${VERSION#v}"
+          # Upstream relay image tags have no "v" prefix.
+          VERSION="${VERSION#v}"
 
           gcloud auth configure-docker "${{ steps.registry.outputs.host }}" --quiet
           SOURCE="ghcr.io/block/buzz:$VERSION"

@@ -33,7 +33,7 @@ spec:
               memory: 512Mi
       containers:
         - name: relay
-          image: ghcr.io/block/buzz:v0.5.23   # deny: tag, not digest
+          image: ghcr.io/block/buzz:0.3.0   # deny: tag, not digest
           securityContext:
             allowPrivilegeEscalation: true    # deny
             capabilities:

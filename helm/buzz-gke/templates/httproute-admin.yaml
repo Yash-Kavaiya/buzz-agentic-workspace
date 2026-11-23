@@ -1,15 +1,38 @@
 {{- include "buzz-gke.validate" . -}}
 {{- if and .Values.gateway.enabled .Values.gateway.admin.enabled .Values.buzz.enabled }}
-# The moderation console, on its own hostname, behind IAP.
+# The admin console, on its own hostname and its own Service, behind IAP.
 #
-# It is a separate hostname rather than a path prefix for a reason: IAP is
-# applied per backend service, and the relay's own backend must stay
-# IAP-free so Nostr clients can connect. Splitting by host gives two backends;
-# splitting by path would not.
+# GKE applies a GCPBackendPolicy per Service. IAP must never reach the relay's
+# backend, because Nostr clients carry no Google session and would all be
+# refused. This Service selects the same relay pods so the console gets a
+# separate load-balancer backend with its own policy.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "buzz-gke.adminServiceName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buzz-gke.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: buzz
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: relay
+  ports:
+    - name: app
+      port: {{ include "buzz-gke.relayPort" . }}
+      targetPort: app
+      protocol: TCP
+    - name: health
+      port: {{ include "buzz-gke.healthPort" . }}
+      targetPort: health
+      protocol: TCP
+---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: {{ include "buzz-gke.fullname" . }}-admin
+  name: {{ include "buzz-gke.adminServiceName" . }}
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "buzz-gke.labels" . | nindent 4 }}
@@ -25,19 +48,48 @@ spec:
             type: PathPrefix
             value: /
       backendRefs:
-        - name: {{ include "buzz-gke.relayServiceName" . }}
+        - name: {{ include "buzz-gke.adminServiceName" . }}
           port: {{ include "buzz-gke.relayPort" . }}
-{{- if .Values.gateway.iap.enabled }}
 ---
 apiVersion: networking.gke.io/v1
-kind: GCPBackendPolicy
+kind: HealthCheckPolicy
 metadata:
-  name: {{ include "buzz-gke.fullname" . }}-admin-iap
+  name: {{ include "buzz-gke.adminServiceName" . }}-hc
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "buzz-gke.labels" . | nindent 4 }}
 spec:
   default:
+    checkIntervalSec: 10
+    timeoutSec: 5
+    healthyThreshold: 1
+    unhealthyThreshold: 3
+    logConfig:
+      enabled: true
+    config:
+      type: HTTP
+      httpHealthCheck:
+        portSpecification: USE_FIXED_PORT
+        port: {{ include "buzz-gke.healthPort" . }}
+        requestPath: /_readiness
+  targetRef:
+    group: ""
+    kind: Service
+    name: {{ include "buzz-gke.adminServiceName" . }}
+---
+apiVersion: networking.gke.io/v1
+kind: GCPBackendPolicy
+metadata:
+  name: {{ include "buzz-gke.adminServiceName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buzz-gke.labels" . | nindent 4 }}
+spec:
+  default:
+    {{- if .Values.gcp.edge.securityPolicyName }}
+    securityPolicy: {{ .Values.gcp.edge.securityPolicyName | quote }}
+    {{- end }}
+    {{- if .Values.gateway.iap.enabled }}
     iap:
       enabled: true
       # Secret holding client_id and client_secret for the IAP OAuth client.
@@ -45,9 +97,14 @@ spec:
       oauth2ClientSecret:
         name: {{ .Values.gateway.iap.oauthSecretName }}
     timeoutSec: 300
+    {{- else }}
+    timeoutSec: {{ .Values.gateway.backendTimeoutSeconds }}
+    {{- end }}
+    logging:
+      enabled: true
+      sampleRate: 500000
   targetRef:
     group: ""
     kind: Service
-    name: {{ include "buzz-gke.relayServiceName" . }}
-{{- end }}
+    name: {{ include "buzz-gke.adminServiceName" . }}
 {{- end }}
