@@ -86,8 +86,8 @@ key anywhere in the system.
 | `terraform/bootstrap` | Run once: APIs, state bucket, keyless CI identity |
 | `terraform/modules` | network · gke · cloudsql · memorystore · kms · secrets · artifact_registry · edge · iam · observability · backup |
 | `terraform/environments` | `dev` `staging` `prod` — one root, one state each |
-| `helm/buzz-gke` | Umbrella chart on upstream `buzz` 0.1.8 |
-| `helm/buzz-gke/files` | `storage_conformance.py` — the object-store gate |
+| `helm/buzz-gke` | Umbrella chart on upstream `buzz` 0.1.13 |
+| `helm/buzz-gke/files` | `storage_conformance.py` (the object-store gate) and the admin dashboard |
 | `config/<env>.yaml` | Public identity config: owner, operators, rate limits |
 | `scripts/buzzctl` | The CLI |
 | `policy/` | conftest rules; the ADRs made machine-checkable |
@@ -105,6 +105,7 @@ key anywhere in the system.
 | [Runbooks](docs/30-runbooks.md) | When something is wrong |
 | [Backup and DR](docs/40-backup-dr.md) | What is protected, and how to restore it |
 | [Onboarding](docs/50-onboarding-users-agents.md) | People, agents, operators |
+| [Admin dashboard](docs/60-admin-dashboard.md) | Manage staff, moderation, reports and feedback |
 | [ADRs](docs/90-adr/) | Why things are the way they are |
 
 ## `buzzctl`
@@ -158,14 +159,14 @@ CI additionally runs the real `terraform validate`, `helm template`,
 
 | | |
 |---|---|
-| Buzz | v0.5.23 (`helm/buzz-gke` `appVersion`) |
-| Upstream chart | `oci://ghcr.io/block/buzz/charts/buzz` 0.1.8 |
+| Buzz relay | 0.3.0 (`helm/buzz-gke` `appVersion`) |
+| Upstream chart | `oci://ghcr.io/block/buzz/charts/buzz` 0.1.13 |
 | Kubernetes | ≥ 1.29 — required for the native sidecar |
 | Terraform | ≥ 1.6, `hashicorp/google` ~> 6.13 |
 
-The upstream chart's `appVersion` is `0.1.0` while the product is at v0.5.23, so
-the default image tag is not usable. Images are always deployed by digest;
-`buzzctl deploy` refuses to run without one.
+Relay and desktop are versioned separately, so desktop v0.5.x has no matching
+relay image. Images are always deployed by digest; `buzzctl deploy` refuses to
+run without one.
 
 ## Licence
 

@@ -51,6 +51,13 @@ else
   run "object-store conformance probe" python3 tests/test_storage_conformance.py
 fi
 
+if command -v node >/dev/null 2>&1; then
+  run "admin dashboard client" node --test tests/test_admin_dashboard.mjs
+else
+  printf '\n%s── admin dashboard client%s\n' "$BOLD" "$RESET"
+  printf '%s   skipped: node is not installed%s\n' "$DIM" "$RESET"
+fi
+
 run "helm template structure" python3 tests/lint_helm_templates.py
 run "conftest policies" ./tests/test_policy.sh
 

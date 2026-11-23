@@ -106,8 +106,8 @@ spec:
               #   bucket ARN  — ListBucket / ListBucketVersions / GetBucketLocation
               #   object ARN  — Get / Put / Delete, including versioned deletes
               # ListBucket at the bucket level is separate from the object-level
-              # grants and is what the hourly storage sweep needs; without it
-              # buzz_storage_sweep_ok stays 0 while media still works.
+              # grants and is what the storage accounting worker needs; without
+              # it the worker's scan fails while media still works.
               cat >/tmp/buzz-relay-policy.json <<POLICY
               {
                 "Version": "2012-10-17",

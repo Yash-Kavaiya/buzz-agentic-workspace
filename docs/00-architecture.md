@@ -104,7 +104,7 @@ terraform/
                       artifact_registry edge iam observability backup
   environments/       dev staging prod — one Terraform root each
 helm/buzz-gke/
-  Chart.yaml          depends on oci://ghcr.io/block/buzz/charts/buzz 0.1.8
+  Chart.yaml          depends on oci://ghcr.io/block/buzz/charts/buzz 0.1.13
   values.yaml         structure and safe defaults
   values-<env>.yaml   reviewed per-environment choices
   templates/          Gateway, policies, PodMonitoring, ExternalSecrets,

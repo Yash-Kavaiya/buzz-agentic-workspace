@@ -1,0 +1,25 @@
+{{- if and .Values.adminDashboard.enabled .Values.gateway.admin.enabled .Values.buzz.enabled }}
+# The admin dashboard, served by the relay from BUZZ_ADMIN_WEB_DIR.
+#
+# A ConfigMap rather than a custom image: the relay image stays the exact
+# upstream artifact that Binary Authorization attests, and the dashboard is a
+# few static files reviewed in this repository.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "buzz-gke.fullname" . }}-admin-dashboard
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "buzz-gke.labels" . | nindent 4 }}
+data:
+  index.html: |-
+    {{- .Files.Get "files/admin-dashboard/index.html" | nindent 4 }}
+  app.js: |-
+    {{- .Files.Get "files/admin-dashboard/app.js" | nindent 4 }}
+  api.js: |-
+    {{- .Files.Get "files/admin-dashboard/api.js" | nindent 4 }}
+  app.css: |-
+    {{- .Files.Get "files/admin-dashboard/app.css" | nindent 4 }}
+  favicon.svg: |-
+    {{- .Files.Get "files/admin-dashboard/favicon.svg" | nindent 4 }}
+{{- end }}

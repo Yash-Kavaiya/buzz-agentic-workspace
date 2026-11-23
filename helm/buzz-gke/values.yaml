@@ -203,6 +203,13 @@ networkPolicy:
   blockedEgressCidrs:
     - 169.254.169.254/32
 
+# ── Admin dashboard ──────────────────────────────────────────────────────────
+# CRUD console in files/admin-dashboard, served by the relay. buzzctl turns this
+# on with the volume, mount and BUZZ_ADMIN_WEB_DIR it needs, so enable it through
+# config/<env>.yaml (adminDashboard.enabled) rather than here.
+adminDashboard:
+  enabled: false
+
 # ── Operators ────────────────────────────────────────────────────────────────
 # 64-char lowercase hex Nostr pubkeys with operator rights on the admin console
 # (RELAY_OPERATOR_PUBKEYS). Empty falls back to ownerPubkey alone.
